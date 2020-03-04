@@ -134,7 +134,7 @@ send_async(Pkt) ->
                                         {error, error_reason()}.
 send(Pkt, Timeout) ->
     Time = current_time() + Timeout,
-    try gen_statem:call(?MODULE, {send_req, Pkt, Time}, Timeout)
+    try gen_statem:call(?MODULE, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
     catch exit:{timeout, {gen_statem, call, _}} ->
             {error, timeout};
           exit:{_, {gen_statem, call, _}} ->
