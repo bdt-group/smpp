@@ -26,6 +26,7 @@
 -type error_reason() :: smpp_socket:error_reason().
 -type statename() :: smpp_socket:statename().
 -type socket_name() :: smpp_socket:socket_name().
+-export_type([state/0, error_reason/0, statename/0]).
 
 -callback handle_connected(state()) -> state().
 -callback handle_disconnected(error_reason(), statename(), state()) -> state().
