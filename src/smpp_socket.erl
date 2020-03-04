@@ -25,16 +25,20 @@
 -export([connecting/3, binding/3, bound/3]).
 
 -include("smpp.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define(VSN, 1).
+-define(MAX_BUF_SIZE, 104857600).
 -define(is_request(CmdID), ((CmdID band 16#80000000) == 0)).
 -define(is_response(CmdID), ((CmdID band 16#80000000) /= 0)).
 -define(is_receiver(Mode), (Mode == receiver orelse Mode == transceiver)).
 
 -type state() :: #{vsn := non_neg_integer(),
                    role := peer_role(),
-                   rq := queue:queue(),
-                   in_flight => in_flight(),
+                   rq := queue:queue(queued_request()),
+                   rq_size := non_neg_integer(),
+                   rq_limit := pos_integer() | infinity,
+                   in_flight => in_flight_request(),
                    callback => module(),
                    mode => mode(),
                    host => string(),
@@ -48,6 +52,7 @@
                    keepalive_timeout => millisecs(),
                    keepalive_time => millisecs(),
                    response_time => millisecs(),
+                   last_overload_report => millisecs(),
                    buf => binary(),
                    seq => 1..16#7FFFFFFF,
                    socket => port(),
@@ -61,13 +66,15 @@
 -type codec_error_reason() :: {bad_length, non_neg_integer()} |
                               {bad_body, non_neg_integer()}.
 -type error_reason() :: closed | timeout | unbinded |
+                        overloaded | system_shutdown | system_error |
                         {inet, inet:posix()} |
                         {bind_failed, pos_integer()} |
                         codec_failure |
                         {codec_failure, codec_error_reason()}.
 -type socket_name() :: {global, term()} | {via, module(), term()} | {local, atom()}.
 -type sender() :: {call, gen_statem:from()} | undefined.
--type in_flight() :: {millisecs(), non_neg_integer(), sender()}.
+-type in_flight_request() :: {millisecs(), sender()}.
+-type queued_request() :: {millisecs(), valid_pdu(), sender()}.
 
 -export_type([error_reason/0, statename/0, state/0]).
 
@@ -142,6 +149,12 @@ format_error(closed) ->
     "connection closed";
 format_error(timeout) ->
     "timed out";
+format_error(overloaded) ->
+    "request queue is overfilled";
+format_error(system_shutdown) ->
+    "system is shutting down";
+format_error(system_error) ->
+    "internal system error";
 format_error(codec_failure) ->
     "SMPP codec error";
 format_error({codec_failure, {bad_length, Len}}) ->
@@ -259,11 +272,16 @@ bound(EventType, Msg, State) ->
     next_state(?FUNCTION_NAME, State).
 
 -spec terminate(term(), statename(), state()) -> any().
-terminate(Reason, bound, #{role := esme} = State) ->
-    State1 = send_req(State, #unbind{}, undefined),
-    callback(handle_stop, Reason, bound, State1);
-terminate(Reason, StateName, State) ->
-    callback(handle_stop, Reason, StateName, State).
+terminate(Why, StateName, State) ->
+    Reason = case Why of
+                 normal -> closed;
+                 shutdown -> system_shutdown;
+                 {shutdown, _} -> system_shutdown;
+                 _ -> system_error
+             end,
+    State1 = discard_in_flight_request(Reason, State),
+    State2 = discard_all_requests(Reason, State1),
+    callback(handle_stop, Reason, StateName, State2).
 
 -spec code_change(term() | {down, term()}, statename(), state(), term()) ->
                          {ok, statename(), state()}.
@@ -322,7 +340,7 @@ handle_request(#pdu{body = #enquire_link{}} = Pkt, State) ->
     State1 = send_resp(State, #enquire_link_resp{}, Pkt),
     {ok, State1};
 handle_request(#pdu{body = #alert_notification{} = Body}, State) ->
-    logger:warning("Got alert notification:~n~s", [pp(Body)]),
+    ?LOG_WARNING("Got alert notification:~n~s", [pp(Body)]),
     {ok, State};
 handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt,
                #{role := esme, mode := Mode} = State) when ?is_receiver(Mode) ->
@@ -430,7 +448,7 @@ decode(Data, StateName, State) ->
 -spec do_decode(binary(), statename(), state()) ->
                        gen_statem:event_handler_result(statename()).
 do_decode(<<Len:32, _/binary>>, StateName, State)
-  when Len < 16 ->
+  when Len < 16 orelse Len >= ?MAX_BUF_SIZE ->
     reconnect({codec_failure, {bad_length, Len}}, StateName, State);
 do_decode(<<Len:32, _/binary>> = Buf, StateName, State)
   when size(Buf) >= Len ->
@@ -441,8 +459,8 @@ do_decode(<<Len:32, _/binary>> = Buf, StateName, State)
         {ok, [#pdu{command_status = Status,
                    sequence_number = Seq,
                    body = Body} = Pkt], <<>>} ->
-            logger:debug("Got PDU (status = ~p, seq = ~p):~n~s",
-                         [Status, Seq, pp(Body)]),
+            ?LOG_DEBUG("Got PDU (status = ~p, seq = ~p):~n~s",
+                       [Status, Seq, pp(Body)]),
             case handle_pkt(Pkt, StateName, State) of
                 {ok, StateName1, State1} ->
                     do_decode(Buf1, StateName1, State1);
@@ -485,8 +503,8 @@ send_resp(State, Body, #pdu{sequence_number = Seq}, Status) ->
 
 send_pkt(State, Status, Seq, Body) ->
     Data = smpp34pdu:pack(Status, Seq, Body),
-    logger:debug("Send PDU (status = ~p, seq = ~p):~n~s",
-                 [Status, Seq, pp(Body)]),
+    ?LOG_DEBUG("Send PDU (status = ~p, seq = ~p):~n~s",
+               [Status, Seq, pp(Body)]),
     sock_send(State, Data).
 
 -spec enqueue_req(state(), valid_pdu(), sender()) -> state().
@@ -495,15 +513,26 @@ enqueue_req(State, Body, Sender) ->
     enqueue_req(State, Body, Sender, current_time() + Timeout).
 
 -spec enqueue_req(state(), valid_pdu(), sender(), millisecs()) -> state().
-enqueue_req(#{rq := RQ} = State, Body, Sender, Time) ->
+enqueue_req(State, Body, Sender, Time) ->
+    State3 = case is_overloaded(State) of
+                 false -> State;
+                 true ->
+                     State1 = report_overload(State),
+                     State2 = drop_stale_requests(State1),
+                     case is_overloaded(State2) of
+                         true -> discard_all_requests(overloaded, State2);
+                         false -> State2
+                     end
+             end,
+    #{rq := RQ, rq_size := Size} = State3,
     RQ1 = queue:in({Time, Body, Sender}, RQ),
-    State#{rq => RQ1}.
+    State3#{rq => RQ1, rq_size => Size+1}.
 
 -spec dequeue_req(state()) -> state().
-dequeue_req(#{rq := RQ} = State) ->
+dequeue_req(#{rq := RQ, rq_size := Size} = State) ->
     case queue:out(RQ) of
         {{value, {Time, Body, Sender}}, RQ1} ->
-            State1 = State#{rq := RQ1},
+            State1 = State#{rq => RQ1, rq_size => Size-1},
             case current_time() >= Time of
                 true -> dequeue_req(State1);
                 false -> send_req(State1, Body, Sender, Time)
@@ -513,6 +542,52 @@ dequeue_req(#{rq := RQ} = State) ->
             set_keepalive_timeout(State1, esme)
     end.
 
+-spec discard_requests(error_reason(), state()) -> state().
+discard_requests(Reason, #{role := Role} = State) ->
+    State1 = discard_in_flight_request(Reason, State),
+    case Role of
+        smsc -> discard_all_requests(Reason, State1);
+        esme -> drop_stale_requests(State1)
+    end.
+
+-spec discard_in_flight_request(error_reason(), state()) -> state().
+discard_in_flight_request(Reason, State) ->
+    case maps:take(in_flight, State) of
+        {{Time, Sender}, State1} ->
+            reply({error, Reason}, Time, Sender),
+            State1;
+        error ->
+            State
+    end.
+
+-spec discard_all_requests(error_reason(), state()) -> state().
+discard_all_requests(Reason, #{rq := RQ} = State) ->
+    _ = queue:filter(
+          fun({Time, _, Sender}) ->
+                  reply({error, Reason}, Time, Sender),
+                  false
+          end, RQ),
+    State#{rq => queue:new(), rq_size => 0}.
+
+-spec drop_stale_requests(state()) -> state().
+drop_stale_requests(#{rq := RQ, rq_size := Size} = State) ->
+    case queue:out(RQ) of
+        {{value, {Time, _, _}}, RQ1} ->
+            case current_time() >= Time of
+                true ->
+                    drop_stale_requests(
+                      State#{rq => RQ1, rq_size => Size-1});
+                false ->
+                    State
+            end;
+        {empty, _} ->
+            State
+    end.
+
+-spec is_overloaded(state()) -> boolean().
+is_overloaded(#{rq_size := Size, rq_limit := Limit}) ->
+    Size >= Limit.
+
 %%%-------------------------------------------------------------------
 %%% State transitions
 %%% ACHTUNG: There is some fuckery with timeouts
@@ -520,15 +595,17 @@ dequeue_req(#{rq := RQ} = State) ->
 -spec reconnect(error_reason(), statename(), state()) ->
                        gen_statem:event_handler_result(statename()).
 reconnect(Reason, StateName, #{role := esme} = State) ->
-    State1 = callback(handle_disconnected, Reason, StateName, State),
-    sock_close(State1),
-    State2 = maps:without([socket, transport, buf, seq,
-                           keepalive_time, response_time,
-                           in_flight], State1),
-    {next_state, connecting, State2, reconnect_timeout(State2)};
+    sock_close(State),
+    State1 = discard_requests(Reason, State),
+    State2 = callback(handle_disconnected, Reason, StateName, State1),
+    State3 = maps:without([socket, transport, buf, seq,
+                           keepalive_time, response_time],
+                          State2),
+    {next_state, connecting, State3, reconnect_timeout(State3)};
 reconnect(Reason, StateName, #{role := smsc} = State) ->
-    State1 = callback(handle_disconnected, Reason, StateName, State),
-    {stop, normal, State1}.
+    State1 = discard_requests(Reason, State),
+    State2 = callback(handle_disconnected, Reason, StateName, State1),
+    {stop, normal, State2}.
 
 -spec bind(state()) -> gen_statem:event_handler_result(statename()).
 bind(#{role := Role} = State) ->
@@ -565,35 +642,36 @@ current_time() ->
 
 -spec init_state(state(), peer_role()) -> state().
 init_state(State, Role) ->
-    State#{vsn => ?VSN, role => Role, rq => queue:new()}.
+    State#{vsn => ?VSN, role => Role,
+           rq => queue:new(), rq_size => 0}.
 
 %%%-------------------------------------------------------------------
 %%% Timers
 %%%-------------------------------------------------------------------
 reconnect_timeout(#{reconnect_timeout := Timeout}) ->
-    logger:debug("Setting reconnect timeout to ~.3fs", [Timeout/1000]),
+    ?LOG_DEBUG("Setting reconnect timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
 
 bind_timeout(#{bind_timeout := Timeout}) ->
-    logger:debug("Setting bind timeout to ~.3fs", [Timeout/1000]),
+    ?LOG_DEBUG("Setting bind timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
 
 set_request_timeout(#{request_timeout := Timeout} = State) ->
-    logger:debug("Setting request timeout to ~.3fs", [Timeout/1000]),
+    ?LOG_DEBUG("Setting request timeout to ~.3fs", [Timeout/1000]),
     set_timeout(response_time, Timeout, State).
 
 unset_request_timeout(State) ->
-    logger:debug("Unsetting request timeout"),
+    ?LOG_DEBUG("Unsetting request timeout"),
     maps:remove(response_time, State).
 
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
-    logger:debug("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
+    ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     set_timeout(keepalive_time, Timeout, State);
 set_keepalive_timeout(State, _) ->
     State.
 
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
-    logger:debug("Unsetting keepalive timeout"),
+    ?LOG_DEBUG("Unsetting keepalive timeout"),
     maps:remove(keepalive_time, State).
 
 -spec set_timeout(keepalive_time | response_time, millisecs(), state()) -> state().
@@ -606,7 +684,7 @@ set_timeout(Key, Timeout, State) ->
 -spec sock_connect(state()) -> {ok, state()} | {error, inet:posix()}.
 sock_connect(#{host := Host, port := Port} = State) ->
     Timeout = maps:get(connect_timeout, State),
-    logger:debug("Connecting to SMSC at ~ts:~B", [Host, Port]),
+    ?LOG_DEBUG("Connecting to SMSC at ~ts:~B", [Host, Port]),
     case gen_tcp:connect(Host, Port,
                          [binary, {active, once}],
                          Timeout) of
@@ -686,7 +764,7 @@ default_callback(_, _, _, State) ->
     State.
 
 %%%-------------------------------------------------------------------
-%%% Logging (that called from multiple places)
+%%% Logging
 %%%-------------------------------------------------------------------
 -spec report_disconnect(error_reason(), statename(), state()) -> ok.
 report_disconnect(Reason, StateName,
@@ -696,43 +774,58 @@ report_disconnect(Reason, StateName,
               binding -> "Failed to bind to SMSC at ~ts:~B: ~s";
               bound -> "Connection with SMSC at ~ts:~B has failed: ~s"
           end,
-    logger:error(Fmt, [Host, Port, format_error(Reason)]);
+    ?LOG_ERROR(Fmt, [Host, Port, format_error(Reason)]);
 report_disconnect(timeout, binding, #{role := smsc, port := Port}) ->
-    logger:error("ESME peer is idle in binding state: "
-                 "forcing disconnect from port ~B",
-                 [Port]);
+    ?LOG_ERROR("ESME peer is idle in binding state: "
+               "forcing disconnect from port ~B",
+               [Port]);
 report_disconnect(Reason, _StateName, #{role := smsc, port := Port}) ->
-    logger:error("ESME peer has disconnected from port ~B: ~s",
-                 [Port, format_error(Reason)]).
+    ?LOG_ERROR("ESME peer has disconnected from port ~B: ~s",
+               [Port, format_error(Reason)]).
 
 -spec report_unexpected_pkt(pdu(), statename(), state()) -> ok.
 report_unexpected_pkt(Pkt, StateName, State) ->
-    logger:warning("Unexpected PDU in state '~s':~n"
-                   "** PDU:~n~s~n"
-                   "** State: ~p",
-                   [StateName, pp(Pkt), State]).
+    ?LOG_WARNING("Unexpected PDU in state '~s':~n"
+                 "** PDU:~n~s~n"
+                 "** State: ~p",
+                 [StateName, pp(Pkt), State]).
 
 -spec report_unexpected_msg(gen_statem:event_type(), term(), statename(), state()) -> ok.
 report_unexpected_msg(EventType, Msg, StateName, State) ->
-    logger:warning("Unexpected ~p in state '~s':~n"
-                   "** Msg = ~p~n"
-                   "** State = ~p",
-                   [EventType, StateName, Msg, State]).
+    ?LOG_WARNING("Unexpected ~p in state '~s':~n"
+                 "** Msg = ~p~n"
+                 "** State = ~p",
+                 [EventType, StateName, Msg, State]).
 
 -spec report_unexpected_response(pdu(), statename(), state()) -> ok.
 report_unexpected_response(Pkt, StateName, State) ->
-    logger:warning("Got unexpected response in state '~s':~n"
-                   "** Pkt:~n~s~n"
-                   "** State: ~p",
-                   [StateName, pp(Pkt), State]).
+    ?LOG_WARNING("Got unexpected response in state '~s':~n"
+                 "** Pkt:~n~s~n"
+                 "** State: ~p",
+                 [StateName, pp(Pkt), State]).
 
 -spec report_bound(state()) -> ok.
 report_bound(#{role := smsc, mode := Mode, port := Port}) ->
-    logger:notice("ESME peer has successfully bound to port ~B as ~s",
-                  [Port, reverse_mode(Mode)]);
+    ?LOG_NOTICE("ESME peer has successfully bound to port ~B as ~s",
+                [Port, reverse_mode(Mode)]);
 report_bound(#{role := esme, mode := Mode, host := Host, port := Port}) ->
-    logger:notice("Successfully bound to SMSC at ~ts:~B as ~s",
-                  [Host, Port, Mode]).
+    ?LOG_NOTICE("Successfully bound to SMSC at ~ts:~B as ~s",
+                [Host, Port, Mode]).
+
+-spec report_overload(state()) -> state().
+report_overload(State) ->
+    Time = current_time(),
+    LastTime = maps:get(last_overload_report, State, 0),
+    case (Time - LastTime) >= timer:seconds(30) of
+        true ->
+            ?LOG_WARNING("Request queue is overfilled "
+                         "(current size = ~B, limit = ~p)",
+                         [maps:get(rq_size, State),
+                          maps:get(rq_limit, State)]),
+            State#{last_overload_report => Time};
+        false ->
+            State
+    end.
 
 -spec reverse_mode(mode()) -> mode().
 reverse_mode(transceiver) -> transceiver;

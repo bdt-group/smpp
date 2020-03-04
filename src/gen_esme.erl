@@ -20,6 +20,7 @@
 -define(RECONNECT_TIMEOUT, timer:seconds(1)).
 -define(KEEPALIVE_TIMEOUT, timer:seconds(10)).
 -define(REQUEST_TIMEOUT, timer:seconds(30)).
+-define(REQUEST_QUEUE_LIMIT, 1000000).
 
 -type state() :: smpp_socket:state().
 -type error_reason() :: smpp_socket:error_reason().
@@ -79,6 +80,7 @@ opts_to_state(Mod, Opts) ->
     SystemId = maps:get(system_id, Opts, ""),
     Password = maps:get(password, Opts, ""),
     Mode = maps:get(mode, Opts, transceiver),
+    RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
     ConnectTimeout = maps:get(connect_timeout, Opts, ?CONNECT_TIMEOUT),
     ReconnectTimeout = maps:get(reconnect_timeout, Opts, ?RECONNECT_TIMEOUT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
@@ -89,6 +91,7 @@ opts_to_state(Mod, Opts) ->
                   mode => Mode,
                   system_id => SystemId,
                   password => Password,
+                  rq_limit => RQLimit,
                   request_timeout => RequestTimeout,
                   connect_timeout => ConnectTimeout,
                   reconnect_timeout => ReconnectTimeout,
