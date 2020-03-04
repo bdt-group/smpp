@@ -14,6 +14,7 @@
 
 -include("smpp.hrl").
 
+-define(BIND_TIMEOUT, timer:seconds(5)).
 -define(KEEPALIVE_TIMEOUT, timer:seconds(60)).
 -define(REQUEST_TIMEOUT, timer:seconds(30)).
 
@@ -55,8 +56,10 @@ opts_to_state(Mod, Opts) ->
     Port = maps:get(port, Opts, ?DEFAULT_PORT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     RequestTimeout = maps:get(request_timeout, Opts, ?REQUEST_TIMEOUT),
+    BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     RanchOpts = [{port, Port}],
     State = Opts#{request_timeout => RequestTimeout,
+                  bind_timeout => BindTimeout,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of
         undefined ->

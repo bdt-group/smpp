@@ -15,9 +15,10 @@
 
 -include("smpp.hrl").
 
+-define(BIND_TIMEOUT, timer:seconds(10)).
 -define(CONNECT_TIMEOUT, timer:seconds(5)).
 -define(RECONNECT_TIMEOUT, timer:seconds(1)).
--define(KEEPALIVE_TIMEOUT, timer:seconds(30)).
+-define(KEEPALIVE_TIMEOUT, timer:seconds(10)).
 -define(REQUEST_TIMEOUT, timer:seconds(30)).
 
 -type state() :: smpp_socket:state().
@@ -82,6 +83,7 @@ opts_to_state(Mod, Opts) ->
     ReconnectTimeout = maps:get(reconnect_timeout, Opts, ?RECONNECT_TIMEOUT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     RequestTimeout = maps:get(request_timeout, Opts, ?REQUEST_TIMEOUT),
+    BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     State = Opts#{host => Host,
                   port => Port,
                   mode => Mode,
@@ -90,6 +92,7 @@ opts_to_state(Mod, Opts) ->
                   request_timeout => RequestTimeout,
                   connect_timeout => ConnectTimeout,
                   reconnect_timeout => ReconnectTimeout,
+                  bind_timeout => BindTimeout,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of
         undefined ->
