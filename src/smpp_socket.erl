@@ -18,6 +18,7 @@
 -export([listen/3]).
 -export([start_link/2, start_link/3]).
 -export([send/2, send_async/1]).
+-export([format_error/1]).
 -export([test/0]).
 
 %% gen_statem callbacks
@@ -35,7 +36,7 @@
 
 -type state() :: #{vsn := non_neg_integer(),
                    role := peer_role(),
-                   rq := queue:queue(queued_request()),
+                   rq := request_queue(),
                    rq_size := non_neg_integer(),
                    rq_limit := pos_integer() | infinity,
                    in_flight => in_flight_request(),
@@ -75,6 +76,7 @@
 -type sender() :: {call, gen_statem:from()} | undefined.
 -type in_flight_request() :: {millisecs(), sender()}.
 -type queued_request() :: {millisecs(), valid_pdu(), sender()}.
+-type request_queue() :: queue:queue(queued_request()).
 
 -export_type([error_reason/0, statename/0, state/0]).
 
