@@ -1,0 +1,8 @@
+[{<<"ranch">>,
+  {git,"https://github.com/ninenines/ranch.git",
+       {ref,"9cc188373fa37c22cf53e85fd43dbab524c32f55"}},
+  0},
+ {<<"smpp34pdu">>,
+  {git,"https://github.com/zinid/smpp34pdu.git",
+       {ref,"aa862aae9144991e30b1ac89ec5ac5f113f6ae46"}},
+  0}].
