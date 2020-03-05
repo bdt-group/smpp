@@ -47,7 +47,6 @@
                    system_id => string(),
                    password => string(),
                    bind_timeout => millisecs(),
-                   request_timeout => millisecs(),
                    connect_timeout => millisecs(),
                    reconnect_timeout => millisecs(),
                    keepalive_timeout => millisecs(),
@@ -83,6 +82,8 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+-spec child_spec(smsc, term(), state(), ranch_tcp:opts()) -> supervisor:child_spec();
+                (esme, socket_name(), term(), state()) -> supervisor:child_spec().
 child_spec(smsc, Id, State, RanchOpts) ->
     ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State);
 child_spec(esme, Name, Id, State) ->
@@ -359,6 +360,7 @@ handle_request(Pkt, State) ->
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVCMDID),
     {ok, State1}.
 
+-spec reply(term(), millisecs(), sender()) -> ok.
 reply(Resp, Time, {call, From}) ->
     case current_time() >= Time of
         true -> ok;
@@ -400,6 +402,7 @@ handle_bind_resp(#pdu{command_status = Status}, State) ->
             {error, {bind_failed, Status}, State}
     end.
 
+-spec handle_bind_req(pdu(), state()) -> {ok, statename(), state()}.
 handle_bind_req(#pdu{body = #bind_transceiver{
                                system_id = SysId,
                                interface_version = Ver}} = Pkt,
@@ -481,7 +484,7 @@ do_decode(Buf, StateName, State) ->
 %%%-------------------------------------------------------------------
 -spec send_req(state(), valid_pdu(), sender()) -> state().
 send_req(State, Body, Sender) ->
-    Timeout = maps:get(request_timeout, State),
+    Timeout = maps:get(keepalive_timeout, State),
     send_req(State, Body, Sender, current_time() + Timeout).
 
 -spec send_req(state(), valid_pdu(), sender(), millisecs()) -> state().
@@ -503,6 +506,7 @@ send_resp(State, Body, #pdu{sequence_number = Seq}, Status) ->
     send_pkt(State, Status, Seq, Body),
     State.
 
+-spec send_pkt(state(), non_neg_integer(), non_neg_integer(), valid_pdu()) -> ok.
 send_pkt(State, Status, Seq, Body) ->
     Data = smpp34pdu:pack(Status, Seq, Body),
     ?LOG_DEBUG("Send PDU (status = ~p, seq = ~p):~n~s",
@@ -511,7 +515,7 @@ send_pkt(State, Status, Seq, Body) ->
 
 -spec enqueue_req(state(), valid_pdu(), sender()) -> state().
 enqueue_req(State, Body, Sender) ->
-    Timeout = maps:get(request_timeout, State),
+    Timeout = maps:get(keepalive_timeout, State),
     enqueue_req(State, Body, Sender, current_time() + Timeout).
 
 -spec enqueue_req(state(), valid_pdu(), sender(), millisecs()) -> state().
@@ -650,31 +654,39 @@ init_state(State, Role) ->
 %%%-------------------------------------------------------------------
 %%% Timers
 %%%-------------------------------------------------------------------
+-spec reconnect_timeout(state()) -> gen_statem:state_timeout().
 reconnect_timeout(#{reconnect_timeout := Timeout}) ->
     ?LOG_DEBUG("Setting reconnect timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
 
+-spec bind_timeout(state()) -> gen_statem:state_timeout().
 bind_timeout(#{bind_timeout := Timeout}) ->
     ?LOG_DEBUG("Setting bind timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
 
-set_request_timeout(#{request_timeout := Timeout} = State) ->
+-spec set_request_timeout(state()) -> state().
+set_request_timeout(#{keepalive_timeout := Timeout} = State) ->
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [Timeout/1000]),
     set_timeout(response_time, Timeout, State).
 
+-spec unset_request_timeout(state()) -> state().
 unset_request_timeout(State) ->
     ?LOG_DEBUG("Unsetting request timeout"),
     maps:remove(response_time, State).
 
+-spec set_keepalive_timeout(state(), peer_role()) -> state().
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     set_timeout(keepalive_time, Timeout, State);
 set_keepalive_timeout(State, _) ->
     State.
 
+-spec unset_keepalive_timeout(state(), peer_role()) -> state().
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
     ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(keepalive_time, State).
+    maps:remove(keepalive_time, State);
+unset_keepalive_timeout(State, _) ->
+    State.
 
 -spec set_timeout(keepalive_time | response_time, millisecs(), state()) -> state().
 set_timeout(Key, Timeout, State) ->
