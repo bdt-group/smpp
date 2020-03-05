@@ -67,6 +67,10 @@ opts_to_state(Mod, Opts) ->
         undefined ->
             {State, RanchOpts};
         _ ->
-            {module, Mod} = code:ensure_loaded(Mod),
-            {State#{callback => Mod}, RanchOpts}
+            case code:ensure_loaded(Mod) of
+                {module, Mod} ->
+                    {State#{callback => Mod}, RanchOpts};
+                Err ->
+                    erlang:error({module_not_found, Mod, Err})
+            end
     end.

@@ -99,6 +99,10 @@ opts_to_state(Mod, Opts) ->
         undefined ->
             State;
         _ ->
-            {module, Mod} = code:ensure_loaded(Mod),
-            State#{callback => Mod}
+            case code:ensure_loaded(Mod) of
+                {module, Mod} ->
+                    State#{callback => Mod};
+                Err ->
+                    erlang:error({module_not_found, Mod, Err})
+            end
     end.
