@@ -407,8 +407,8 @@ handle_bind_req(#pdu{body = #bind_transceiver{
     BindResp = #bind_transceiver_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
-    State1 = send_resp(State, BindResp, Pkt),
-    State2 = State1#{mode => transceiver},
+    State1 = State#{system_id => SysId, mode => transceiver},
+    State2 = send_resp(State1, BindResp, Pkt),
     State3 = callback(handle_bound, State2),
     {ok, bound, State3};
 handle_bind_req(#pdu{body = #bind_receiver{
@@ -418,8 +418,8 @@ handle_bind_req(#pdu{body = #bind_receiver{
     BindResp = #bind_receiver_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
-    State1 = send_resp(State, BindResp, Pkt),
-    State2 = State1#{mode => transmitter},
+    State1 = State#{system_id => SysId, mode => transmitter},
+    State2 = send_resp(State1, BindResp, Pkt),
     State3 = callback(handle_bound, State2),
     {ok, bound, State3};
 handle_bind_req(#pdu{body = #bind_transmitter{
@@ -429,8 +429,8 @@ handle_bind_req(#pdu{body = #bind_transmitter{
     BindResp = #bind_transmitter_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
-    State1 = send_resp(State, BindResp, Pkt),
-    State2 = State1#{mode => receiver},
+    State1 = State#{system_id => SysId, mode => receiver},
+    State2 = send_resp(State1, BindResp, Pkt),
     State3 = callback(handle_bound, State2),
     {ok, bound, State3};
 handle_bind_req(Pkt, State) ->
