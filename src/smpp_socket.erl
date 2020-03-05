@@ -83,10 +83,10 @@
 %%% API
 %%%===================================================================
 -spec child_spec(smsc, term(), state(), ranch_tcp:opts()) -> supervisor:child_spec();
-                (esme, socket_name(), term(), state()) -> supervisor:child_spec().
+                (esme, term(), state(), socket_name()) -> supervisor:child_spec().
 child_spec(smsc, Id, State, RanchOpts) ->
     ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State);
-child_spec(esme, Name, Id, State) ->
+child_spec(esme, Id, State, Name) ->
     #{id => Id,
       start => {?MODULE, start_link, [Name, State]},
       restart => transient,

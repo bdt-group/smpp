@@ -47,7 +47,7 @@
                         supervisor:child_spec().
 child_spec(Name, Mod, Opts) ->
     State = opts_to_state(Mod, Opts),
-    smpp_socket:child_spec(esme, Name, get_id_by_name(Name), State).
+    smpp_socket:child_spec(esme, get_id_by_name(Name), State, Name).
 
 -spec start(module() | undefined, map()) -> {ok, pid()} | {error, term()}.
 start(Mod, Opts) ->
