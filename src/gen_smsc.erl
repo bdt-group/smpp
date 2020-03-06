@@ -10,6 +10,8 @@
 
 %% API
 -export([start/3]).
+-export([send/3, send_async/2]).
+-export([format_error/1]).
 -export([child_spec/3]).
 
 -include("smpp.hrl").
@@ -49,6 +51,20 @@ child_spec(Id, Mod, Opts) ->
 start(Id, Mod, Opts) ->
     {State, RanchOpts} = opts_to_state(Mod, Opts),
     smpp_socket:listen(Id, State, RanchOpts).
+
+-spec send(gen_statem:server_ref(), valid_pdu(), pos_integer()) ->
+          {ok, {non_neg_integer(), valid_pdu()}} |
+          {error, error_reason()}.
+send(Ref, Pkt, Timeout) ->
+    smpp_socket:send(Ref, Pkt, Timeout).
+
+-spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
+send_async(Ref, Pkt) ->
+    smpp_socket:send_async(Ref, Pkt).
+
+-spec format_error(error_reason()) -> string().
+format_error(Reason) ->
+    smpp_socket:format_error(Reason).
 
 %%%===================================================================
 %%% Internal functions

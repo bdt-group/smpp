@@ -17,9 +17,8 @@
 -export([connect_link/1, connect_link/2]).
 -export([listen/3]).
 -export([start_link/2, start_link/3]).
--export([send/2, send_async/1]).
+-export([send/3, send_async/2]).
 -export([format_error/1]).
--export([test/0]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
@@ -129,15 +128,16 @@ start_link(Name, State) ->
 start_link(Ref, Transport, State) ->
     {ok, proc_lib:spawn_link(?MODULE, init, [{Ref, Transport, State}])}.
 
--spec send_async(valid_pdu()) -> ok.
-send_async(Pkt) ->
-    gen_statem:cast(?MODULE, {send_req, Pkt}).
+-spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
+send_async(Ref, Pkt) ->
+    gen_statem:cast(Ref, {send_req, Pkt}).
 
--spec send(valid_pdu(), millisecs()) -> {ok, {non_neg_integer(), valid_pdu()}} |
-                                        {error, error_reason()}.
-send(Pkt, Timeout) ->
+-spec send(gen_statem:server_ref(), valid_pdu(), millisecs()) ->
+          {ok, {non_neg_integer(), valid_pdu()}} |
+          {error, error_reason()}.
+send(Ref, Pkt, Timeout) ->
     Time = current_time() + Timeout,
-    try gen_statem:call(?MODULE, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
+    try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
     catch exit:{timeout, {gen_statem, call, _}} ->
             {error, timeout};
           exit:{_, {gen_statem, call, _}} ->
@@ -170,16 +170,6 @@ format_error(unbinded) ->
     "binding closed by peer";
 format_error({bind_failed, Status}) ->
     "binding failed (status = " ++ integer_to_list(Status) ++ ")".
-
-test() ->
-    test(0, 1000000),
-    send(#enquire_link{}, timer:minutes(5)).
-
-test(N, N) ->
-    ok;
-test(M, N) ->
-    send_async(#enquire_link{}),
-    test(M+1, N).
 
 %%%===================================================================
 %%% gen_statem callbacks
