@@ -9,8 +9,10 @@
 
 %% API
 -export([start/3]).
--export([send/3, send_async/2]).
+-export([send/3]).
+-export([send_async/2, send_async/3, send_async/4]).
 -export([format_error/1]).
+-export([pp/1]).
 -export([child_spec/3]).
 
 -include("smpp.hrl").
@@ -22,8 +24,10 @@
 -type state() :: smpp_socket:state().
 -type error_reason() :: smpp_socket:error_reason().
 -type statename() :: binding | connected.
+-type send_callback() :: smpp_socket:send_callback().
+-type send_reply() :: smpp_socket:send_reply().
 
--export_type([state/0, error_reason/0, statename/0]).
+-export_type([state/0, error_reason/0, statename/0, send_reply/0, send_callback/0]).
 
 -callback handle_connected(state()) -> state().
 -callback handle_disconnected(error_reason(), statename(), state()) -> state().
@@ -52,9 +56,7 @@ start(Id, Mod, Opts) ->
     {State, RanchOpts} = opts_to_state(Mod, Opts),
     smpp_socket:listen(Id, State, RanchOpts).
 
--spec send(gen_statem:server_ref(), valid_pdu(), pos_integer()) ->
-          {ok, {non_neg_integer(), valid_pdu()}} |
-          {error, error_reason()}.
+-spec send(gen_statem:server_ref(), valid_pdu(), pos_integer()) -> send_reply().
 send(Ref, Pkt, Timeout) ->
     smpp_socket:send(Ref, Pkt, Timeout).
 
@@ -62,9 +64,23 @@ send(Ref, Pkt, Timeout) ->
 send_async(Ref, Pkt) ->
     smpp_socket:send_async(Ref, Pkt).
 
+-spec send_async(gen_statem:server_ref(), valid_pdu(),
+                 undefined | send_callback()) -> ok.
+send_async(Ref, Pkt, Fun) ->
+    smpp_socket:send_async(Ref, Pkt, Fun).
+
+-spec send_async(gen_statem:server_ref(), valid_pdu(),
+                 undefined | send_callback(), pos_integer()) -> ok.
+send_async(Ref, Pkt, Fun, Timeout) ->
+    smpp_socket:send_async(Ref, Pkt, Fun, Timeout).
+
 -spec format_error(error_reason()) -> string().
 format_error(Reason) ->
     smpp_socket:format_error(Reason).
+
+-spec pp(term()) -> iolist().
+pp(Term) ->
+    smpp_socket:pp(Term).
 
 %%%===================================================================
 %%% Internal functions

@@ -16,8 +16,10 @@
 -export([connect_link/1, connect_link/2]).
 -export([listen/3]).
 -export([start_link/2, start_link/3]).
--export([send/3, send_async/2]).
+-export([send/3]).
+-export([send_async/2, send_async/3, send_async/4]).
 -export([format_error/1]).
+-export([pp/1]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
@@ -70,12 +72,15 @@
                         codec_failure |
                         {codec_failure, codec_error_reason()}.
 -type socket_name() :: {global, term()} | {via, module(), term()} | {local, atom()}.
--type sender() :: {call, gen_statem:from()} | undefined.
+-type sender() :: gen_statem:from() | send_callback() | undefined.
 -type in_flight_request() :: {millisecs(), sender()}.
 -type queued_request() :: {millisecs(), valid_pdu(), sender()}.
 -type request_queue() :: queue:queue(queued_request()).
+-type send_reply() :: {ok, {non_neg_integer(), valid_pdu()}} |
+                      {error, error_reason()}.
+-type send_callback() :: fun((send_reply(), state()) -> state()).
 
--export_type([error_reason/0, statename/0, state/0]).
+-export_type([error_reason/0, send_reply/0, statename/0, state/0, send_callback/0]).
 
 %%%===================================================================
 %%% API
@@ -129,11 +134,18 @@ start_link(Ref, Transport, State) ->
 
 -spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
 send_async(Ref, Pkt) ->
-    gen_statem:cast(Ref, {send_req, Pkt}).
+    send_async(Ref, Pkt, undefined).
 
--spec send(gen_statem:server_ref(), valid_pdu(), millisecs()) ->
-          {ok, {non_neg_integer(), valid_pdu()}} |
-          {error, error_reason()}.
+-spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback()) -> ok.
+send_async(Ref, Pkt, Fun) ->
+    gen_statem:cast(Ref, {send_req, Pkt, Fun, undefined}).
+
+-spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback(), millisecs()) -> ok.
+send_async(Ref, Pkt, Fun, Timeout) ->
+    Time = current_time() + Timeout,
+    gen_statem:cast(Ref, {send_req, Pkt, Fun, Time}).
+
+-spec send(gen_statem:server_ref(), valid_pdu(), millisecs()) -> send_reply().
 send(Ref, Pkt, Timeout) ->
     Time = current_time() + Timeout,
     try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
@@ -169,6 +181,10 @@ format_error(unbinded) ->
     "binding closed by peer";
 format_error({bind_failed, Status}) ->
     "binding failed (status = " ++ integer_to_list(Status) ++ ")".
+
+-spec pp(any()) -> iolist().
+pp(Term) ->
+    io_lib_pretty:print(Term, fun pp/2).
 
 %%%===================================================================
 %%% gen_statem callbacks
@@ -212,11 +228,11 @@ connecting(info, connect, State) ->
     end;
 connecting(state_timeout, _, State) ->
     connecting(info, connect, State);
-connecting({call, _} = Sender, {send_req, Body, Time}, State) ->
-    State1 = enqueue_req(State, Body, Sender, Time),
+connecting({call, From}, {send_req, Body, Time}, State) ->
+    State1 = enqueue_req(State, Body, From, Time),
     next_state(?FUNCTION_NAME, State1);
-connecting(cast, {send_req, Body}, State) ->
-    State1 = enqueue_req(State, Body, undefined),
+connecting(cast, {send_req, Body, Fun, Time}, State) ->
+    State1 = enqueue_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
 connecting(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
@@ -232,11 +248,11 @@ binding(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 binding(state_timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
-binding({call, _} = Sender, {send_req, Body, Time}, State) ->
-    State1 = enqueue_req(State, Body, Sender, Time),
+binding({call, From}, {send_req, Body, Time}, State) ->
+    State1 = enqueue_req(State, Body, From, Time),
     next_state(?FUNCTION_NAME, State1);
-binding(cast, {send_req, Body}, State) ->
-    State1 = enqueue_req(State, Body, undefined),
+binding(cast, {send_req, Body, Fun, Time}, State) ->
+    State1 = enqueue_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
 binding(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
@@ -251,15 +267,15 @@ bound(info, {tcp_closed, Sock}, #{socket := Sock} = State) ->
 bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 bound(timeout, keepalive, #{role := esme} = State) ->
-    State1 = send_req(State, #enquire_link{}, undefined),
+    State1 = send_req(State, #enquire_link{}),
     next_state(?FUNCTION_NAME, State1);
 bound(timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
-bound({call, _} = Sender, {send_req, Body, Time}, State) ->
-    State1 = send_req(State, Body, Sender, Time),
+bound({call, From}, {send_req, Body, Time}, State) ->
+    State1 = send_req(State, Body, From, Time),
     next_state(?FUNCTION_NAME, State1);
-bound(cast, {send_req, Body}, State) ->
-    State1 = send_req(State, Body, undefined),
+bound(cast, {send_req, Body, Fun, Time}, State) ->
+    State1 = send_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
 bound(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
@@ -300,8 +316,8 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                     Other
             end;
         {{Time, Sender}, State1} when StateName == bound ->
-            reply({ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
-            {ok, StateName, dequeue_req(State1)};
+            State2 = reply(State1, {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
+            {ok, StateName, dequeue_req(State2)};
         error ->
             report_unexpected_response(Pkt, StateName, State),
             {ok, StateName, State}
@@ -351,14 +367,21 @@ handle_request(Pkt, State) ->
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVCMDID),
     {ok, State1}.
 
--spec reply(term(), millisecs(), sender()) -> ok.
-reply(Resp, Time, {call, From}) ->
+-spec reply(state(), send_reply(), millisecs(), sender()) -> state().
+reply(State, _, _, undefined) ->
+    State;
+reply(State, Resp, Time, Sender) ->
     case current_time() >= Time of
-        true -> ok;
-        false -> gen_statem:reply(From, Resp)
-    end;
-reply(_, _, _) ->
-    ok.
+        true -> State;
+        false ->
+            case Sender of
+                Fun when is_function(Fun) ->
+                    Fun(Resp, State);
+                From ->
+                    gen_statem:reply(From, Resp),
+                    State
+            end
+    end.
 
 %%%-------------------------------------------------------------------
 %%% Binding
@@ -380,7 +403,7 @@ send_bind_req(#{role := esme, mode := Mode,
                          system_id = SystemId,
                          password = Password}
               end,
-    send_req(State, BindReq, undefined).
+    send_req(State, BindReq).
 
 -spec handle_bind_resp(pdu(), state()) -> {ok, statename(), state()} |
                                           {error, error_reason(), state()}.
@@ -473,12 +496,14 @@ do_decode(Buf, StateName, State) ->
 %%%-------------------------------------------------------------------
 %%% Send/enqueue/dequeue requests/responses
 %%%-------------------------------------------------------------------
--spec send_req(state(), valid_pdu(), sender()) -> state().
-send_req(State, Body, Sender) ->
-    Timeout = maps:get(keepalive_timeout, State),
-    send_req(State, Body, Sender, current_time() + Timeout).
+-spec send_req(state(), valid_pdu()) -> state().
+send_req(State, Body) ->
+    send_req(State, Body, undefined, undefined).
 
--spec send_req(state(), valid_pdu(), sender(), millisecs()) -> state().
+-spec send_req(state(), valid_pdu(), sender(), undefined | millisecs()) -> state().
+send_req(State, Body, Sender, undefined) ->
+    Timeout = maps:get(keepalive_timeout, State),
+    send_req(State, Body, Sender, current_time() + Timeout);
 send_req(#{in_flight := _} = State, Body, Sender, Time) ->
     enqueue_req(State, Body, Sender, Time);
 send_req(State, Body, Sender, Time) ->
@@ -503,11 +528,6 @@ send_pkt(State, Status, Seq, Body) ->
     ?LOG_DEBUG("Send PDU (status = ~p, seq = ~p):~n~s",
                [Status, Seq, pp(Body)]),
     sock_send(State, Data).
-
--spec enqueue_req(state(), valid_pdu(), sender()) -> state().
-enqueue_req(State, Body, Sender) ->
-    Timeout = maps:get(keepalive_timeout, State),
-    enqueue_req(State, Body, Sender, current_time() + Timeout).
 
 -spec enqueue_req(state(), valid_pdu(), sender(), millisecs()) -> state().
 enqueue_req(State, Body, Sender, Time) ->
@@ -551,20 +571,18 @@ discard_requests(Reason, #{role := Role} = State) ->
 discard_in_flight_request(Reason, State) ->
     case maps:take(in_flight, State) of
         {{Time, Sender}, State1} ->
-            reply({error, Reason}, Time, Sender),
-            State1;
+            reply(State1, {error, Reason}, Time, Sender);
         error ->
             State
     end.
 
 -spec discard_all_requests(error_reason(), state()) -> state().
 discard_all_requests(Reason, #{rq := RQ} = State) ->
-    _ = queue:filter(
-          fun({Time, _, Sender}) ->
-                  reply({error, Reason}, Time, Sender),
-                  false
-          end, RQ),
-    State#{rq => queue:new(), rq_size => 0}.
+    State2 = lists:foldl(
+               fun({Time, _, Sender}, State1) ->
+                       reply(State1, {error, Reason}, Time, Sender)
+               end, State, queue:to_list(RQ)),
+    State2#{rq => queue:new(), rq_size => 0}.
 
 -spec drop_stale_requests(state()) -> state().
 drop_stale_requests(#{rq := RQ, rq_size := Size} = State) ->
@@ -849,10 +867,6 @@ reverse_mode(transmitter) -> receiver.
 %%%-------------------------------------------------------------------
 %%% Pretty printer
 %%%-------------------------------------------------------------------
--spec pp(any()) -> iolist().
-pp(Term) ->
-    io_lib_pretty:print(Term, fun pp/2).
-
 pp(alert_notification, _) -> record_info(fields, alert_notification);
 pp(bind_receiver, _) -> record_info(fields, bind_receiver);
 pp(bind_receiver_resp, _) -> record_info(fields, bind_receiver_resp);
