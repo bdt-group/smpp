@@ -338,13 +338,13 @@ handle_request(#pdu{body = #alert_notification{} = Body}, State) ->
     {ok, State};
 handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt,
                #{role := esme, mode := Mode} = State) when ?is_receiver(Mode) ->
-    {Status, State1} = callback(handle_deliver, Body, State),
-    State2 = send_resp(State1, #deliver_sm_resp{}, Pkt, Status),
+    {Status, Resp, State1} = callback(handle_deliver, Body, State),
+    State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
 handle_request(#pdu{body = #submit_sm{} = Body} = Pkt,
                #{role := smsc, mode := Mode} = State) when ?is_receiver(Mode) ->
-    {Status, State1} = callback(handle_submit, Body, State),
-    State2 = send_resp(State1, #submit_sm_resp{}, Pkt, Status),
+    {Status, Resp, State1} = callback(handle_submit, Body, State),
+    State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
 handle_request(Pkt, State) ->
     report_unexpected_pkt(Pkt, bound, State),
@@ -732,11 +732,15 @@ callback(Fun, #{callback := Mod} = State) ->
 callback(Fun, State) ->
     default_callback(Fun, State).
 
--spec callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), state()}.
+-spec callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), valid_pdu(), state()}.
 callback(Fun, Body, #{callback := Mod} = State) ->
     case erlang:function_exported(Mod, Fun, 2) of
-        true -> Mod:Fun(Body, State);
-        false -> default_callback(Fun, Body, State)
+        false -> default_callback(Fun, Body, State);
+        true ->
+            case Mod:Fun(Body, State) of
+                {Status, State1} -> {Status, default_response(Body), State1};
+                Ret -> Ret
+            end
     end;
 callback(Fun, Body, State) ->
     default_callback(Fun, Body, State).
@@ -757,9 +761,9 @@ default_callback(handle_bound, State) ->
 default_callback(_, State) ->
     State.
 
--spec default_callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), state()}.
-default_callback(_, _, State) ->
-    {?ESME_RINVCMDID, State}.
+-spec default_callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), valid_pdu(), state()}.
+default_callback(_, Body, State) ->
+    {?ESME_RINVCMDID, default_response(Body), State}.
 
 -spec default_callback(atom(), term(), statename(), state()) -> state().
 default_callback(handle_disconnected, Reason, StateName, State) ->
@@ -767,6 +771,11 @@ default_callback(handle_disconnected, Reason, StateName, State) ->
     State;
 default_callback(_, _, _, State) ->
     State.
+
+-spec default_response(deliver_sm()) -> deliver_sm_resp();
+                      (submit_sm()) -> submit_sm_resp().
+default_response(#deliver_sm{}) -> #deliver_sm_resp{};
+default_response(#submit_sm{}) -> #submit_sm_resp{}.
 
 %%%-------------------------------------------------------------------
 %%% Logging

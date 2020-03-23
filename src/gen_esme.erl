@@ -31,7 +31,8 @@
 -callback handle_connected(state()) -> state().
 -callback handle_disconnected(error_reason(), statename(), state()) -> state().
 -callback handle_bound(state()) -> state().
--callback handle_deliver(deliver_sm(), state()) -> {non_neg_integer(), state()}.
+-callback handle_deliver(deliver_sm(), state()) -> {non_neg_integer(), state()} |
+                                                   {non_neg_integer(), deliver_sm_resp(), state()}.
 -callback handle_stop(term(), statename(), state()) -> any().
 
 %% All callbacks are optional
