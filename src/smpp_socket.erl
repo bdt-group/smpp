@@ -40,6 +40,7 @@
                    rq := request_queue(),
                    rq_size := non_neg_integer(),
                    rq_limit := pos_integer() | infinity,
+                   reconnect := boolean(),
                    in_flight => in_flight_request(),
                    callback => module(),
                    mode => mode(),
@@ -584,11 +585,11 @@ dequeue_req(#{rq := RQ, rq_size := Size} = State) ->
     end.
 
 -spec discard_requests(error_reason(), state()) -> state().
-discard_requests(Reason, #{role := Role} = State) ->
+discard_requests(Reason, #{reconnect := Reconnect} = State) ->
     State1 = discard_in_flight_request(Reason, State),
-    case Role of
-        smsc -> discard_all_requests(Reason, State1);
-        esme -> drop_stale_requests(State1)
+    case Reconnect of
+        false -> discard_all_requests(Reason, State1);
+        true -> drop_stale_requests(State1)
     end.
 
 -spec discard_in_flight_request(error_reason(), state()) -> state().
@@ -633,7 +634,7 @@ is_overloaded(#{rq_size := Size, rq_limit := Limit}) ->
 %%%-------------------------------------------------------------------
 -spec reconnect(error_reason(), statename(), state()) ->
                        gen_statem:event_handler_result(statename()).
-reconnect(Reason, StateName, #{role := esme} = State) ->
+reconnect(Reason, StateName, #{reconnect := true} = State) ->
     sock_close(State),
     State1 = discard_requests(Reason, State),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
@@ -641,7 +642,7 @@ reconnect(Reason, StateName, #{role := esme} = State) ->
                            keepalive_time, response_time],
                           State2),
     {next_state, connecting, State3, reconnect_timeout(State3)};
-reconnect(Reason, StateName, #{role := smsc} = State) ->
+reconnect(Reason, StateName, #{reconnect := false} = State) ->
     State1 = discard_requests(Reason, State),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
     {stop, normal, State2}.

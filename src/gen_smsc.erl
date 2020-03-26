@@ -98,6 +98,7 @@ opts_to_state(Mod, Opts) ->
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     RanchOpts = [{port, Port}],
     State = Opts#{rq_limit => RQLimit,
+                  reconnect => false,
                   bind_timeout => BindTimeout,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of
