@@ -9,6 +9,7 @@
 
 %% API
 -export([start/3]).
+-export([stop/1]).
 -export([send/3]).
 -export([send_async/2, send_async/3, send_async/4]).
 -export([format_error/1]).
@@ -55,6 +56,10 @@ child_spec(Id, Mod, Opts) ->
 start(Id, Mod, Opts) ->
     {State, RanchOpts} = opts_to_state(Mod, Opts),
     smpp_socket:listen(Id, State, RanchOpts).
+
+-spec stop(gen_statem:server_ref() | state()) -> any().
+stop(Ref) ->
+    smpp_socket:stop(Ref).
 
 -spec send(gen_statem:server_ref(), valid_pdu(), pos_integer()) -> send_reply().
 send(Ref, Pkt, Timeout) ->

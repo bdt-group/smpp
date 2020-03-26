@@ -9,6 +9,7 @@
 
 %% API
 -export([start/2, start/3]).
+-export([stop/1]).
 -export([start_link/2, start_link/3]).
 -export([send/3]).
 -export([send_async/2, send_async/3, send_async/4]).
@@ -64,6 +65,10 @@ start(Mod, Opts) ->
                    {ok, pid()} | {error, term()}.
 start(Name, Mod, Opts) ->
     smpp_socket:connect(Name, opts_to_state(Mod, Opts)).
+
+-spec stop(gen_statem:server_ref() | state()) -> any().
+stop(Ref) ->
+    smpp_socket:stop(Ref).
 
 -spec start_link(module() | undefined, map()) -> {ok, pid()} | {error, term()}.
 start_link(Mod, Opts) ->

@@ -18,6 +18,7 @@
 -export([start_link/2, start_link/3]).
 -export([send/3]).
 -export([send_async/2, send_async/3, send_async/4]).
+-export([stop/1]).
 -export([format_error/1]).
 -export([pp/1]).
 
@@ -132,6 +133,19 @@ start_link(Name, State) ->
 start_link(Ref, Transport, State) ->
     {ok, proc_lib:spawn_link(?MODULE, init, [{Ref, Transport, State}])}.
 
+-spec stop(gen_statem:server_ref()) -> ok;
+          (state()) -> state().
+stop(#{} = State) ->
+    %% We're fooling dialyzer here
+    try erlang:nif_error(normal) of
+        _ -> State
+    catch _:_ ->
+            put(shutdown_state, State),
+            exit(normal)
+    end;
+stop(Ref) ->
+    gen_statem:cast(Ref, stop).
+
 -spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
 send_async(Ref, Pkt) ->
     send_async(Ref, Pkt, undefined).
@@ -234,6 +248,8 @@ connecting({call, From}, {send_req, Body, Time}, State) ->
 connecting(cast, {send_req, Body, Fun, Time}, State) ->
     State1 = enqueue_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
+connecting(cast, stop, State) ->
+    {stop, normal, State};
 connecting(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
     next_state(?FUNCTION_NAME, State).
@@ -254,6 +270,8 @@ binding({call, From}, {send_req, Body, Time}, State) ->
 binding(cast, {send_req, Body, Fun, Time}, State) ->
     State1 = enqueue_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
+binding(cast, stop, State) ->
+    {stop, normal, State};
 binding(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
     next_state(?FUNCTION_NAME, State).
@@ -277,12 +295,18 @@ bound({call, From}, {send_req, Body, Time}, State) ->
 bound(cast, {send_req, Body, Fun, Time}, State) ->
     State1 = send_req(State, Body, Fun, Time),
     next_state(?FUNCTION_NAME, State1);
+bound(cast, stop, State) ->
+    {stop, normal, State};
 bound(EventType, Msg, State) ->
     report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
     next_state(?FUNCTION_NAME, State).
 
 -spec terminate(term(), statename(), state()) -> any().
-terminate(Why, StateName, State) ->
+terminate(Why, StateName, State0) ->
+    State = case erase(shutdown_state) of
+                undefined -> State0;
+                St -> St
+            end,
     Reason = case Why of
                  normal -> closed;
                  shutdown -> system_shutdown;
@@ -766,7 +790,7 @@ callback(Fun, Body, State) ->
 -spec callback(atom(), term(), statename(), state()) -> state().
 callback(Fun, Term, StateName, #{callback := Mod} = State) ->
     case erlang:function_exported(Mod, Fun, 3) of
-        true -> Mod:Fun(State);
+        true -> Mod:Fun(Term, StateName, State);
         false -> default_callback(Fun, Term, StateName, State)
     end;
 callback(Fun, Term, StateName, State) ->
