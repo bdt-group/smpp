@@ -5,10 +5,10 @@
   {applications,
    [kernel,
     stdlib,
-    ranch
+    ranch,
+    smpp34pdu
    ]},
   {env,[]},
   {modules, []},
-  {included_applications, [smpp34pdu]},
   {links, []}
  ]}.
