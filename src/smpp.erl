@@ -13,12 +13,14 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+-spec start() -> ok | {error, term()}.
 start() ->
     case application:ensure_all_started(?MODULE) of
         {ok, _} -> ok;
         {error, _} = Err -> Err
     end.
 
+-spec stop() -> ok | {error, term()}.
 stop() ->
     application:stop(?MODULE).
 

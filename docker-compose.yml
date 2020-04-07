@@ -1,0 +1,17 @@
+version: '3'
+services:
+
+  smpp:
+    image: ${DC_IMAGE_NAME}
+    environment:
+      - BUILDER_UID=${DC_UID}
+      - BUILDER_GID=${DC_GID}
+      - BUILDER_USER=${DC_USER}
+      - BUILDER_GROUP=${DC_GROUP}
+    volumes:
+      - ${PWD}:${PWD}
+      - ${HOME}/.cache:${HOME}/.cache
+      - ${HOME}/.ssh:${HOME}/.ssh
+      - ${PWD}/etc:/home/cleep/etc
+    working_dir: ${PWD}
+    command: /sbin/init
