@@ -74,7 +74,7 @@
                         codec_failure |
                         {codec_failure, codec_error_reason()}.
 -type socket_name() :: {global, term()} | {via, module(), term()} | {local, atom()}.
--type sender() :: gen_statem:from() | send_callback() | undefined.
+-type sender() :: {pid(), term()} | send_callback() | undefined.
 -type in_flight_request() :: {millisecs(), sender()}.
 -type queued_request() :: {millisecs(), valid_pdu(), sender()}.
 -type request_queue() :: queue:queue(queued_request()).
@@ -82,7 +82,9 @@
                       {error, error_reason()}.
 -type send_callback() :: fun((send_reply(), state()) -> state()).
 
--export_type([error_reason/0, send_reply/0, statename/0, state/0, send_callback/0]).
+-export_type([error_reason/0, socket_name/0]).
+-export_type([send_reply/0, send_callback/0]).
+-export_type([statename/0, state/0]).
 
 %%%===================================================================
 %%% API
@@ -688,12 +690,12 @@ init_state(State, Role) ->
 %%%-------------------------------------------------------------------
 %%% Timers
 %%%-------------------------------------------------------------------
--spec reconnect_timeout(state()) -> gen_statem:state_timeout().
+-spec reconnect_timeout(state()) -> {state_timeout, millisecs(), reconnect}.
 reconnect_timeout(#{reconnect_timeout := Timeout}) ->
     ?LOG_DEBUG("Setting reconnect timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
 
--spec bind_timeout(state()) -> gen_statem:state_timeout().
+-spec bind_timeout(state()) -> {state_timeout, millisecs(), reconnect}.
 bind_timeout(#{bind_timeout := Timeout}) ->
     ?LOG_DEBUG("Setting bind timeout to ~.3fs", [Timeout/1000]),
     {state_timeout, Timeout, reconnect}.
