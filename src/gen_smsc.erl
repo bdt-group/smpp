@@ -12,6 +12,7 @@
 -export([stop/1]).
 -export([send/3]).
 -export([send_async/2, send_async/3, send_async/4]).
+-export([call/3, reply/2]).
 -export([format_error/1]).
 -export([pp/1]).
 -export([child_spec/3]).
@@ -24,24 +25,34 @@
 
 -type state() :: smpp_socket:state().
 -type error_reason() :: smpp_socket:error_reason().
--type statename() :: binding | connected.
+-type statename() :: smpp_socket:statename().
 -type send_callback() :: smpp_socket:send_callback().
 -type send_reply() :: smpp_socket:send_reply().
+-type event_type() :: gen_statem:event_type().
+-type from() :: {pid(), term()}. %% gen_statem:from()
 
 -export_type([state/0, error_reason/0, statename/0, send_reply/0, send_callback/0]).
+-export_type([event_type/0, from/0]).
 
--callback handle_connected(state()) -> state().
--callback handle_disconnected(error_reason(), statename(), state()) -> state().
--callback handle_bound(state()) -> state().
+-callback handle_connected(state()) -> state() | ignore.
+-callback handle_disconnected(error_reason(), statename(), state()) -> state() | ignore.
+-callback handle_bound(state()) -> state() | ignore.
+-callback handle_deliver(deliver_sm(), state()) -> {non_neg_integer(), state()} |
+                                                   {non_neg_integer(), deliver_sm_resp(), state()} |
+                                                   ignore.
 -callback handle_submit(submit_sm(), state()) -> {non_neg_integer(), state()} |
-                                                 {non_neg_integer(), submit_sm_resp(), state()}.
+                                                 {non_neg_integer(), submit_sm_resp(), state()} |
+                                                 ignore.
 -callback handle_stop(term(), statename(), state()) -> any().
+-callback handle_event(event_type(), term(), statename(), state()) -> state() | ignore.
 
 %% All callbacks are optional
 -optional_callbacks([handle_connected/1,
                      handle_disconnected/3,
                      handle_bound/1,
+                     handle_deliver/2,
                      handle_submit/2,
+                     handle_event/4,
                      handle_stop/3]).
 
 %%%===================================================================
@@ -79,6 +90,19 @@ send_async(Ref, Pkt, Fun) ->
 send_async(Ref, Pkt, Fun, Timeout) ->
     smpp_socket:send_async(Ref, Pkt, Fun, Timeout).
 
+-spec call(gen_statem:server_ref(), term(), timeout()) -> term().
+call(Ref, Term, Timeout) ->
+    try gen_statem:call(Ref, Term, {dirty_timeout, Timeout})
+    catch exit:{timeout, {gen_statem, call, _}} ->
+            exit({timeout, {?MODULE, call, [Ref, Term, Timeout]}});
+          exit:{_, {gen_statem, call, _}} ->
+            exit({closed, {?MODULE, call, [Ref, Term, Timeout]}})
+    end.
+
+-spec reply(from(), term()) -> ok.
+reply(From, Term) ->
+    gen_statem:reply(From, Term).
+
 -spec format_error(error_reason()) -> string().
 format_error(Reason) ->
     smpp_socket:format_error(Reason).
@@ -96,9 +120,11 @@ opts_to_state(Mod, Opts) ->
     RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
+    IsProxy = maps:get(proxy, Opts, false),
     RanchOpts = [{port, Port}],
     State = Opts#{rq_limit => RQLimit,
                   reconnect => false,
+                  proxy => IsProxy,
                   bind_timeout => BindTimeout,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of

@@ -41,6 +41,7 @@
                    rq_size := non_neg_integer(),
                    rq_limit := pos_integer() | infinity,
                    reconnect := boolean(),
+                   proxy := boolean(),
                    in_flight => in_flight_request(),
                    callback => module(),
                    mode => mode(),
@@ -254,8 +255,8 @@ connecting(cast, {send_req, Body, Fun, Time}, State) ->
 connecting(cast, stop, State) ->
     {stop, normal, State};
 connecting(EventType, Msg, State) ->
-    report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State).
+    State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
+    next_state(?FUNCTION_NAME, State1).
 
 -spec binding(gen_statem:event_type(), term(), state()) ->
                      gen_statem:event_handler_result(statename()).
@@ -276,8 +277,8 @@ binding(cast, {send_req, Body, Fun, Time}, State) ->
 binding(cast, stop, State) ->
     {stop, normal, State};
 binding(EventType, Msg, State) ->
-    report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State).
+    State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
+    next_state(?FUNCTION_NAME, State1).
 
 -spec bound(gen_statem:event_type(), term(), state()) ->
                        gen_statem:event_handler_result(statename()).
@@ -301,8 +302,8 @@ bound(cast, {send_req, Body, Fun, Time}, State) ->
 bound(cast, stop, State) ->
     {stop, normal, State};
 bound(EventType, Msg, State) ->
-    report_unexpected_msg(EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State).
+    State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
+    next_state(?FUNCTION_NAME, State1).
 
 -spec terminate(term(), statename(), state()) -> any().
 terminate(Why, StateName, State0) ->
@@ -380,12 +381,14 @@ handle_request(#pdu{body = #alert_notification{} = Body}, State) ->
     ?LOG_WARNING("Got alert notification:~n~s", [pp(Body)]),
     {ok, State};
 handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt,
-               #{role := esme, mode := Mode} = State) when ?is_receiver(Mode) ->
+               #{role := Role, mode := Mode, proxy := Proxy} = State)
+  when ?is_receiver(Mode) andalso (Role == esme orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_deliver, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
 handle_request(#pdu{body = #submit_sm{} = Body} = Pkt,
-               #{role := smsc, mode := Mode} = State) when ?is_receiver(Mode) ->
+               #{role := Role, mode := Mode, proxy := Proxy} = State)
+  when ?is_receiver(Mode) andalso (Role == smsc orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_submit, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
@@ -771,8 +774,12 @@ sock_send(#{socket := Sock, transport := Transport}, Data) ->
 -spec callback(atom(), state()) -> state().
 callback(Fun, #{callback := Mod} = State) ->
     case erlang:function_exported(Mod, Fun, 1) of
-        true -> Mod:Fun(State);
-        false -> default_callback(Fun, State)
+        false -> default_callback(Fun, State);
+        true ->
+            case Mod:Fun(State) of
+                ignore -> default_callback(Fun, State);
+                State1 -> State1
+            end
     end;
 callback(Fun, State) ->
     default_callback(Fun, State).
@@ -783,6 +790,7 @@ callback(Fun, Body, #{callback := Mod} = State) ->
         false -> default_callback(Fun, Body, State);
         true ->
             case Mod:Fun(Body, State) of
+                ignore -> default_callback(Fun, Body, State);
                 {Status, State1} -> {Status, default_response(Body), State1};
                 Ret -> Ret
             end
@@ -793,11 +801,28 @@ callback(Fun, Body, State) ->
 -spec callback(atom(), term(), statename(), state()) -> state().
 callback(Fun, Term, StateName, #{callback := Mod} = State) ->
     case erlang:function_exported(Mod, Fun, 3) of
-        true -> Mod:Fun(Term, StateName, State);
-        false -> default_callback(Fun, Term, StateName, State)
+        false -> default_callback(Fun, Term, StateName, State);
+        true ->
+            case Mod:Fun(Term, StateName, State) of
+                ignore -> default_callback(Fun, Term, StateName, State);
+                State1 -> State1
+            end
     end;
 callback(Fun, Term, StateName, State) ->
     default_callback(Fun, Term, StateName, State).
+
+-spec callback(atom(), term(), term(), statename(), state()) -> state().
+callback(Fun, EventType, Msg, StateName, #{callback := Mod} = State) ->
+    case erlang:function_exported(Mod, Fun, 4) of
+        false -> default_callback(Fun, EventType, Msg, StateName, State);
+        true ->
+            case Mod:Fun(EventType, Msg, StateName, State) of
+                ignore -> default_callback(Fun, EventType, Msg, StateName, State);
+                State1 -> State1
+            end
+    end;
+callback(Fun, EventType, Msg, StateName, State) ->
+    default_callback(Fun, EventType, Msg, StateName, State).
 
 -spec default_callback(atom(), state()) -> state().
 default_callback(handle_bound, State) ->
@@ -815,6 +840,11 @@ default_callback(handle_disconnected, Reason, StateName, State) ->
     report_disconnect(Reason, StateName, State),
     State;
 default_callback(_, _, _, State) ->
+    State.
+
+-spec default_callback(atom(), gen_statem:event_type(), term(), statename(), state()) -> state().
+default_callback(handle_event, EventType, Msg, StateName, State) ->
+    report_unexpected_msg(EventType, Msg, StateName, State),
     State.
 
 -spec default_response(deliver_sm()) -> deliver_sm_resp();
