@@ -358,7 +358,7 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                 Other ->
                     Other
             end;
-        {value, {Time, _, Sender}, InFlight1} when StateName == bound ->
+        {value, {Seq, {Time, _, Sender}}, InFlight1} when StateName == bound ->
             State1 = reply(State#{in_flight => InFlight1},
                            {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
             {ok, StateName, dequeue_req(State1)};
