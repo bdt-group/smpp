@@ -54,7 +54,8 @@
                    rq_limit := pos_integer() | infinity,
                    reconnect := boolean(),
                    proxy := boolean(),
-                   in_flight => in_flight_request(),
+                   in_flight := [{seq(), in_flight_request()}],
+                   in_flight_limit := pos_integer(),
                    callback => module(),
                    mode => mode(),
                    host => string(),
@@ -74,6 +75,7 @@
                    transport => module(),
                    _ => term()}.
 
+-type seq() :: non_neg_integer().
 -type statename() :: connecting | binding | bound.
 -type peer_role() :: smsc | esme.
 -type mode() :: transmitter | receiver | transceiver.
@@ -88,7 +90,7 @@
                         {codec_failure, codec_error_reason()}.
 -type socket_name() :: {global, term()} | {via, module(), term()} | {local, atom()}.
 -type sender() :: {pid(), term()} | send_callback() | undefined.
--type in_flight_request() :: {millisecs(), sender()}.
+-type in_flight_request() :: {ReqDeadline :: millisecs(), RespDeadline :: millisecs(), sender()}.
 -type queued_request() :: {millisecs(), valid_pdu(), sender()}.
 -type request_queue() :: queue:queue(queued_request()).
 -type send_reply() :: {ok, {non_neg_integer(), valid_pdu()}} |
@@ -344,21 +346,23 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 -spec handle_pkt(pdu(), statename(), state()) -> {ok, statename(), state()} |
                                                  {error, error_reason(), state()}.
 handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
-           StateName, #{seq := Seq} = State) when ?is_response(CmdID) ->
+           StateName, #{seq := CurSeq, in_flight:= InFlight} = State) when
+      ?is_response(CmdID) andalso Seq =< CurSeq ->
     %% TODO: check that the response type correlates with request type,
     %% because so far we don't check it elsewhere and assume it does
-    case maps:take(in_flight, State) of
-        {{_, _}, State1} when StateName == binding ->
-            case handle_bind_resp(Pkt, State1) of
-                {ok, bound, State2} ->
-                    {ok, bound, dequeue_req(State2)};
+    case lists:keytake(Seq, 1, InFlight) of
+        {value, _, InFlight1} when StateName == binding ->
+            case handle_bind_resp(Pkt, State#{in_flight => InFlight1}) of
+                {ok, bound, State1} ->
+                    {ok, bound, dequeue_req(State1)};
                 Other ->
                     Other
             end;
-        {{Time, Sender}, State1} when StateName == bound ->
-            State2 = reply(State1, {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
-            {ok, StateName, dequeue_req(State2)};
-        error ->
+        {value, {Seq, {Time, _, Sender}}, InFlight1} when StateName == bound ->
+            State1 = reply(State#{in_flight => InFlight1},
+                           {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
+            {ok, StateName, dequeue_req(State1)};
+        false ->
             report_unexpected_response(Pkt, StateName, State),
             {ok, StateName, State}
     end;
@@ -546,11 +550,13 @@ send_req(State, Body) ->
 send_req(State, Body, Sender, undefined) ->
     Timeout = maps:get(keepalive_timeout, State),
     send_req(State, Body, Sender, current_time() + Timeout);
-send_req(#{in_flight := _} = State, Body, Sender, Time) ->
+send_req(#{in_flight := InFlight, in_flight_limit := Limit} = State, Body, Sender, Time) when
+      length(InFlight) > Limit ->
     enqueue_req(State, Body, Sender, Time);
-send_req(State, Body, Sender, Time) ->
+send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
     Seq = (maps:get(seq, State, 0) rem 16#7FFFFFFF) + 1,
-    State1 = State#{seq => Seq, in_flight => {Time, Sender}},
+    RespDeadline = current_time() + maps:get(keepalive_timeout, State),
+    State1 = State#{seq => Seq, in_flight => [{Seq, {Time, RespDeadline, Sender}} | InFlight]},
     send_pkt(State1, ?ESME_ROK, Seq, Body),
     State2 = unset_keepalive_timeout(State1, esme),
     set_request_timeout(State2).
@@ -610,13 +616,10 @@ discard_requests(Reason, #{reconnect := Reconnect} = State) ->
     end.
 
 -spec discard_in_flight_request(error_reason(), state()) -> state().
-discard_in_flight_request(Reason, State) ->
-    case maps:take(in_flight, State) of
-        {{Time, Sender}, State1} ->
-            reply(State1, {error, Reason}, Time, Sender);
-        error ->
-            State
-    end.
+discard_in_flight_request(Reason, #{in_flight := InFlight} = State) ->
+    lists:foldl(fun({_Seq, {Time, _, Sender}}, State1) ->
+                        reply(State1, {error, Reason}, Time, Sender)
+                end, State#{in_flight => []}, InFlight).
 
 -spec discard_all_requests(error_reason(), state()) -> state().
 discard_all_requests(Reason, #{rq := RQ} = State) ->
@@ -700,7 +703,8 @@ current_time() ->
 -spec init_state(state(), peer_role()) -> state().
 init_state(State, Role) ->
     State#{vsn => ?VSN, role => Role,
-           rq => queue:new(), rq_size => 0}.
+           rq => queue:new(), rq_size => 0,
+           in_flight => []}.
 
 %%%-------------------------------------------------------------------
 %%% Timers
@@ -716,9 +720,10 @@ bind_timeout(#{bind_timeout := Timeout}) ->
     {state_timeout, Timeout, reconnect}.
 
 -spec set_request_timeout(state()) -> state().
-set_request_timeout(#{keepalive_timeout := Timeout} = State) ->
-    ?LOG_DEBUG("Setting request timeout to ~.3fs", [Timeout/1000]),
-    set_timeout(response_time, Timeout, State).
+set_request_timeout(#{in_flight := InFlight} = State) ->
+    {_, {_, RespDeadline, _}} = lists:last(InFlight),
+    ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
+    State#{response_time => RespDeadline}.
 
 -spec unset_request_timeout(state()) -> state().
 unset_request_timeout(State) ->
@@ -728,7 +733,7 @@ unset_request_timeout(State) ->
 -spec set_keepalive_timeout(state(), peer_role()) -> state().
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
-    set_timeout(keepalive_time, Timeout, State);
+    State#{keepalive_time => current_time() + Timeout};
 set_keepalive_timeout(State, _) ->
     State.
 
@@ -738,10 +743,6 @@ unset_keepalive_timeout(#{role := Role} = State, Role) ->
     maps:remove(keepalive_time, State);
 unset_keepalive_timeout(State, _) ->
     State.
-
--spec set_timeout(keepalive_time | response_time, millisecs(), state()) -> state().
-set_timeout(Key, Timeout, State) ->
-    State#{Key => current_time() + Timeout}.
 
 %%%-------------------------------------------------------------------
 %%% Socket management

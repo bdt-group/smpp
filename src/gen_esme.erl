@@ -37,6 +37,7 @@
 -define(RECONNECT_TIMEOUT, timer:seconds(1)).
 -define(KEEPALIVE_TIMEOUT, timer:seconds(10)).
 -define(REQUEST_QUEUE_LIMIT, 1000000).
+-define(IN_FLIGHT_LIMIT, 1).
 
 -type state() :: smpp_socket:state().
 -type error_reason() :: smpp_socket:error_reason().
@@ -157,6 +158,7 @@ opts_to_state(Mod, Opts) ->
     Reconnect = maps:get(reconnect, Opts, true),
     IsProxy = maps:get(proxy, Opts, false),
     RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
+    InFlightLimit = maps:get(in_flight_limit, Opts, ?IN_FLIGHT_LIMIT),
     ConnectTimeout = maps:get(connect_timeout, Opts, ?CONNECT_TIMEOUT),
     ReconnectTimeout = maps:get(reconnect_timeout, Opts, ?RECONNECT_TIMEOUT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
@@ -167,6 +169,7 @@ opts_to_state(Mod, Opts) ->
                   system_id => SystemId,
                   password => Password,
                   rq_limit => RQLimit,
+                  in_flight_limit => InFlightLimit,
                   proxy => IsProxy,
                   reconnect => Reconnect,
                   connect_timeout => ConnectTimeout,
