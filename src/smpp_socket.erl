@@ -95,7 +95,7 @@
 -type request_queue() :: queue:queue(queued_request()).
 -type send_reply() :: {ok, {non_neg_integer(), valid_pdu()}} |
                       {error, error_reason()}.
--type send_callback() :: fun((send_reply(), state()) -> state()).
+-type send_callback() :: fun((send_reply() | {error, stale}, state()) -> state()).
 
 -export_type([error_reason/0, socket_name/0]).
 -export_type([send_reply/0, send_callback/0]).
@@ -331,7 +331,7 @@ terminate(Why, StateName, State0) ->
                  {shutdown, _} -> system_shutdown;
                  _ -> system_error
              end,
-    State1 = discard_in_flight_request(Reason, State),
+    State1 = discard_in_flight_requests(Reason, State),
     State2 = discard_all_requests(Reason, State1),
     callback(handle_stop, Reason, StateName, State2).
 
@@ -413,20 +413,19 @@ handle_request(Pkt, State) ->
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVCMDID),
     {ok, State1}.
 
--spec reply(state(), send_reply(), millisecs(), sender()) -> state().
+-spec reply(state(), send_reply() | {error, stale}, millisecs(), sender()) -> state().
 reply(State, _, _, undefined) ->
     State;
 reply(State, Resp, Time, Sender) ->
-    case current_time() >= Time of
-        true -> State;
-        false ->
-            case Sender of
-                Fun when is_function(Fun) ->
-                    Fun(Resp, State);
-                From ->
-                    gen_statem:reply(From, Resp),
-                    State
-            end
+    Now = current_time(),
+    case Sender of
+        Fun when is_function(Fun) ->
+            Fun(Resp, State);
+        From when Now < Time ->
+            gen_statem:reply(From, Resp),
+            State;
+        _ ->
+            State
     end.
 
 %%%-------------------------------------------------------------------
@@ -607,17 +606,9 @@ dequeue_req(#{rq := RQ, rq_size := Size} = State) ->
             set_keepalive_timeout(State1, esme)
     end.
 
--spec discard_requests(error_reason(), state()) -> state().
-discard_requests(Reason, #{reconnect := Reconnect} = State) ->
-    State1 = discard_in_flight_request(Reason, State),
-    case Reconnect of
-        false -> discard_all_requests(Reason, State1);
-        true -> drop_stale_requests(State1)
-    end.
-
--spec discard_in_flight_request(error_reason(), state()) -> state().
-discard_in_flight_request(Reason, #{in_flight := InFlight} = State) ->
-    lists:foldl(fun({_Seq, {Time, _, Sender}}, State1) ->
+-spec discard_in_flight_requests(error_reason(), state()) -> state().
+discard_in_flight_requests(Reason, #{in_flight := InFlight} = State) ->
+    lists:foldr(fun({_Seq, {Time, _, Sender}}, State1) ->
                         reply(State1, {error, Reason}, Time, Sender)
                 end, State#{in_flight => []}, InFlight).
 
@@ -632,11 +623,11 @@ discard_all_requests(Reason, #{rq := RQ} = State) ->
 -spec drop_stale_requests(state()) -> state().
 drop_stale_requests(#{rq := RQ, rq_size := Size} = State) ->
     case queue:out(RQ) of
-        {{value, {Time, _, _}}, RQ1} ->
+        {{value, {Time, _, Sender}}, RQ1} ->
             case current_time() >= Time of
                 true ->
-                    drop_stale_requests(
-                      State#{rq => RQ1, rq_size => Size-1});
+                    State1 = reply(State, {error, stale}, Time, Sender),
+                    drop_stale_requests(State1#{rq => RQ1, rq_size => Size-1});
                 false ->
                     State
             end;
@@ -656,14 +647,14 @@ is_overloaded(#{rq_size := Size, rq_limit := Limit}) ->
                        gen_statem:event_handler_result(statename()).
 reconnect(Reason, StateName, #{reconnect := true} = State) ->
     sock_close(State),
-    State1 = discard_requests(Reason, State),
+    State1 = drop_stale_requests(discard_in_flight_requests(Reason, State)),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
     State3 = maps:without([socket, transport, buf, seq,
                            keepalive_time, response_time],
                           State2),
     {next_state, connecting, State3, reconnect_timeout(State3)};
 reconnect(Reason, StateName, #{reconnect := false} = State) ->
-    State1 = discard_requests(Reason, State),
+    State1 = discard_all_requests(Reason, discard_in_flight_requests(Reason, State)),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
     {stop, normal, State2}.
 
