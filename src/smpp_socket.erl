@@ -36,7 +36,8 @@
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
--export([connecting/3, binding/3, bound/3]).
+-export([connecting/3, binding/3, bound/3,
+         rate_limit_cooldown/3, in_flight_limit_cooldown/3]).
 
 -include("smpp.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -49,13 +50,11 @@
 
 -type state() :: #{vsn := non_neg_integer(),
                    role := peer_role(),
-                   rq := request_queue(),
-                   rq_size := non_neg_integer(),
-                   rq_limit := pos_integer() | infinity,
                    reconnect := boolean(),
                    proxy := boolean(),
                    in_flight := [{seq(), in_flight_request()}],
                    in_flight_limit := pos_integer(),
+                   req_per_sec := undefined | pos_integer(),
                    callback => module(),
                    mode => mode(),
                    host => string(),
@@ -68,34 +67,39 @@
                    keepalive_timeout => millisecs(),
                    keepalive_time => millisecs(),
                    response_time => millisecs(),
-                   last_overload_report => millisecs(),
                    buf => binary(),
                    seq => 1..16#7FFFFFFF,
                    socket => port(),
                    transport => module(),
+                   current_rps => {millisecs(), non_neg_integer()},
                    _ => term()}.
 
 -type seq() :: non_neg_integer().
--type statename() :: connecting | binding | bound.
+-type statename() :: connecting | binding | bound |
+                     rate_limit_cooldown | in_flight_limit_cooldown.
 -type peer_role() :: smsc | esme.
 -type mode() :: transmitter | receiver | transceiver.
 -type millisecs() :: pos_integer().
 -type codec_error_reason() :: {bad_length, non_neg_integer()} |
                               {bad_body, non_neg_integer()}.
+% Any of those reasons are possible and client should be able
+% to handle all of them regardless.
+% Relative frequency of occurence of each one of them depends on
+% SMSC implementation and one's timings.
+-type flow_control_reason() :: sending_expired | rate_limit | in_flight_limit.
 -type error_reason() :: closed | timeout | unbinded |
-                        overloaded | system_shutdown | system_error |
+                        system_shutdown | system_error |
                         {inet, inet:posix()} |
                         {bind_failed, pos_integer()} |
                         codec_failure |
-                        {codec_failure, codec_error_reason()}.
+                        {codec_failure, codec_error_reason()} |
+                        flow_control_reason().
 -type socket_name() :: {global, term()} | {via, module(), term()} | {local, atom()}.
 -type sender() :: {pid(), term()} | send_callback() | undefined.
 -type in_flight_request() :: {ReqDeadline :: millisecs(), RespDeadline :: millisecs(), sender()}.
--type queued_request() :: {millisecs(), valid_pdu(), sender()}.
--type request_queue() :: queue:queue(queued_request()).
 -type send_reply() :: {ok, {non_neg_integer(), valid_pdu()}} |
                       {error, error_reason()}.
--type send_callback() :: fun((send_reply() | {error, stale}, state()) -> state()).
+-type send_callback() :: fun((send_reply() | {error, flow_control_reason()}, state()) -> state()).
 
 -export_type([error_reason/0, socket_name/0]).
 -export_type([send_reply/0, send_callback/0]).
@@ -197,8 +201,6 @@ format_error(closed) ->
     "connection closed";
 format_error(timeout) ->
     "timed out";
-format_error(overloaded) ->
-    "request queue is overfilled";
 format_error(system_shutdown) ->
     "system is shutting down";
 format_error(system_error) ->
@@ -211,6 +213,12 @@ format_error({codec_failure, {bad_body, Id}}) ->
     "SMPP codec error: malformed body of command " ++ integer_to_list(Id);
 format_error(unbinded) ->
     "binding closed by peer";
+format_error(sending_expired) ->
+    "stale request";
+format_error(rate_limit) ->
+    "discarded by rate limit";
+format_error(in_flight_limit) ->
+    "threshold amount met for in flight requests";
 format_error({bind_failed, Status}) ->
     "binding failed (status = " ++ integer_to_list(Status) ++ ")".
 
@@ -246,7 +254,7 @@ init({Ref, Transport, State}) ->
     end;
 init(State) ->
     self() ! connect,
-    {ok, connecting, State}.
+    {ok, connecting, init_rate_limit(State)}.
 
 -spec connecting(gen_statem:event_type(), term(), state()) ->
                         gen_statem:event_handler_result(statename()).
@@ -260,17 +268,15 @@ connecting(info, connect, State) ->
     end;
 connecting(state_timeout, _, State) ->
     connecting(info, connect, State);
-connecting({call, From}, {send_req, Body, Time}, State) ->
-    State1 = enqueue_req(State, Body, From, Time),
-    next_state(?FUNCTION_NAME, State1);
-connecting(cast, {send_req, Body, Fun, Time}, State) ->
-    State1 = enqueue_req(State, Body, Fun, Time),
-    next_state(?FUNCTION_NAME, State1);
+connecting({call, _From}, {send_req, _Body, _Time}, State) ->
+    keep_state(State, [postpone]);
+connecting(cast, {send_req, _Body, _Fun, _Time}, State) ->
+    keep_state(State, [postpone]);
 connecting(cast, stop, State) ->
     {stop, normal, State};
 connecting(EventType, Msg, State) ->
     State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State1).
+    keep_state(State1).
 
 -spec binding(gen_statem:event_type(), term(), state()) ->
                      gen_statem:event_handler_result(statename()).
@@ -282,17 +288,15 @@ binding(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 binding(state_timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
-binding({call, From}, {send_req, Body, Time}, State) ->
-    State1 = enqueue_req(State, Body, From, Time),
-    next_state(?FUNCTION_NAME, State1);
-binding(cast, {send_req, Body, Fun, Time}, State) ->
-    State1 = enqueue_req(State, Body, Fun, Time),
-    next_state(?FUNCTION_NAME, State1);
+binding({call, _From}, {send_req, _Body, _Time}, State) ->
+    keep_state(State, [postpone]);
+binding(cast, {send_req, _Body, _Fun, _Time}, State) ->
+    keep_state(State, [postpone]);
 binding(cast, stop, State) ->
     {stop, normal, State};
 binding(EventType, Msg, State) ->
     State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State1).
+    keep_state(State1, [postpone]).
 
 -spec bound(gen_statem:event_type(), term(), state()) ->
                        gen_statem:event_handler_result(statename()).
@@ -304,20 +308,72 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 bound(timeout, keepalive, #{role := esme} = State) ->
     State1 = send_req(State, #enquire_link{}),
-    next_state(?FUNCTION_NAME, State1);
+    keep_state(State1);
 bound(timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
 bound({call, From}, {send_req, Body, Time}, State) ->
-    State1 = send_req(State, Body, From, Time),
-    next_state(?FUNCTION_NAME, State1);
-bound(cast, {send_req, Body, Fun, Time}, State) ->
-    State1 = send_req(State, Body, Fun, Time),
-    next_state(?FUNCTION_NAME, State1);
+    % send request operation is the same for call and cast methods,
+    % fun send_req/4 is polymorphic on 3rd argument for pid/tag and callback fun
+    bound(cast, {send_req, Body, From, Time}, State);
+bound(cast, {send_req, Body, Sender, Time}, State) ->
+    case current_time() > Time of
+        true ->
+            State1 = reply(State, {error, sending_expired}, current_time(), Sender),
+            keep_state(State1);
+        false ->
+            case check_limits(State) of
+                {ok, State1} ->
+                    State2 = send_req(State1, Body, Sender, Time),
+                    keep_state(State2);
+                {error, {NextState, State1, Actions}} ->
+                    next_state(NextState, State1, Actions)
+            end
+    end;
 bound(cast, stop, State) ->
     {stop, normal, State};
 bound(EventType, Msg, State) ->
     State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
-    next_state(?FUNCTION_NAME, State1).
+    keep_state(State1).
+
+-spec rate_limit_cooldown(gen_statem:event_type(), term(), state()) ->
+          gen_statem:event_handler_result(statename()).
+rate_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
+    decode(Data, ?FUNCTION_NAME, State);
+rate_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
+    keep_state(State, [{next_event, timeout, keepalive}]);
+rate_limit_cooldown(state_timeout, rate_limit_reset, State) ->
+    next_state(bound, State);
+rate_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
+    rate_limit_cooldown(cast, {send_req, Body, From, Time}, State);
+rate_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
+    case current_time() > Time of
+        true ->
+            State1 = reply(State, {error, rate_limit}, current_time(), Sender),
+            keep_state(State1);
+        false ->
+            keep_state(State, [postpone])
+    end;
+rate_limit_cooldown(EventType, EventContent, State) ->
+    bound(EventType, EventContent, State).
+
+-spec in_flight_limit_cooldown(gen_statem:event_type(), term(), state()) ->
+          gen_statem:event_handler_result(statename()).
+in_flight_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
+    decode(Data, ?FUNCTION_NAME, State);
+in_flight_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
+    keep_state(State, [{next_event, timeout, keepalive}]);
+in_flight_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
+    in_flight_limit_cooldown(cast, {send_req, Body, From, Time}, State);
+in_flight_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
+    case current_time() > Time of
+        true ->
+            State1 = reply(State, {error, in_flight_limit}, current_time(), Sender),
+            keep_state(State1);
+        false ->
+            keep_state(State, [postpone])
+    end;
+in_flight_limit_cooldown(EventType, EventContent, State) ->
+    bound(EventType, EventContent, State).
 
 -spec terminate(term(), statename(), state()) -> any().
 terminate(Why, StateName, State0) ->
@@ -332,8 +388,7 @@ terminate(Why, StateName, State0) ->
                  _ -> system_error
              end,
     State1 = discard_in_flight_requests(Reason, State),
-    State2 = discard_all_requests(Reason, State1),
-    callback(handle_stop, Reason, StateName, State2).
+    callback(handle_stop, Reason, StateName, State1).
 
 -spec code_change(term() | {down, term()}, statename(), state(), term()) ->
                          {ok, statename(), state()}.
@@ -354,14 +409,21 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
         {value, _, InFlight1} when StateName == binding ->
             case handle_bind_resp(Pkt, State#{in_flight => InFlight1}) of
                 {ok, bound, State1} ->
-                    {ok, bound, dequeue_req(State1)};
+                    {ok, bound, State1};
                 Other ->
                     Other
             end;
-        {value, {Seq, {Time, _, Sender}}, InFlight1} when StateName == bound ->
+        {value, {Seq, {Time, _, Sender}}, InFlight1}
+          when StateName == bound;
+               StateName == in_flight_limit_cooldown;
+               StateName == rate_limit_cooldown ->
             State1 = reply(State#{in_flight => InFlight1},
                            {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
-            {ok, StateName, dequeue_req(State1)};
+            NextState = case StateName of
+                            rate_limit_cooldown -> StateName;
+                            _ -> bound
+                        end,
+            {ok, NextState, State1};
         false ->
             report_unexpected_response(Pkt, StateName, State),
             {ok, StateName, State}
@@ -373,43 +435,45 @@ handle_pkt(Pkt, binding, State) ->
     case handle_bind_req(Pkt, State) of
         {ok, bound, State1} ->
             State2 = set_keepalive_timeout(State1, smsc),
-            {ok, bound, dequeue_req(State2)};
+            {ok, bound, State2};
         Other ->
             Other
     end;
-handle_pkt(Pkt, bound, State) ->
-    case handle_request(Pkt, State) of
+handle_pkt(Pkt, StateName, State) when StateName == bound;
+                                       StateName == rate_limit_cooldown;
+                                       StateName == in_flight_limit_cooldown ->
+    case handle_request(Pkt, StateName, State) of
         {ok, State1} ->
             State2 = set_keepalive_timeout(State1, smsc),
-            {ok, bound, State2};
+            {ok, StateName, State2};
         {error, _, _} = Err ->
             Err
     end.
 
--spec handle_request(pdu(), state()) -> {ok, state()} | {error, error_reason(), state()}.
-handle_request(#pdu{body = #unbind{}} = Pkt, State) ->
+-spec handle_request(pdu(), statename(), state()) -> {ok, state()} | {error, error_reason(), state()}.
+handle_request(#pdu{body = #unbind{}} = Pkt, _, State) ->
     State1 = send_resp(State, #unbind_resp{}, Pkt),
     {error, unbinded, State1};
-handle_request(#pdu{body = #enquire_link{}} = Pkt, State) ->
+handle_request(#pdu{body = #enquire_link{}} = Pkt, _, State) ->
     State1 = send_resp(State, #enquire_link_resp{}, Pkt),
     {ok, State1};
-handle_request(#pdu{body = #alert_notification{} = Body}, State) ->
+handle_request(#pdu{body = #alert_notification{} = Body}, _, State) ->
     ?LOG_WARNING("Got alert notification:~n~s", [pp(Body)]),
     {ok, State};
-handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt,
+handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt, _,
                #{role := Role, mode := Mode, proxy := Proxy} = State)
   when ?is_receiver(Mode) andalso (Role == esme orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_deliver, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
-handle_request(#pdu{body = #submit_sm{} = Body} = Pkt,
+handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
                #{role := Role, mode := Mode, proxy := Proxy} = State)
   when ?is_receiver(Mode) andalso (Role == smsc orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_submit, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
-handle_request(Pkt, State) ->
-    report_unexpected_pkt(Pkt, bound, State),
+handle_request(Pkt, StateName, State) ->
+    report_unexpected_pkt(Pkt, StateName, State),
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVCMDID),
     {ok, State1}.
 
@@ -539,7 +603,7 @@ do_decode(Buf, StateName, State) ->
     next_state(StateName, State#{buf => Buf}).
 
 %%%-------------------------------------------------------------------
-%%% Send/enqueue/dequeue requests/responses
+%%% Send requests/responses
 %%%-------------------------------------------------------------------
 -spec send_req(state(), valid_pdu()) -> state().
 send_req(State, Body) ->
@@ -549,9 +613,6 @@ send_req(State, Body) ->
 send_req(State, Body, Sender, undefined) ->
     Timeout = maps:get(keepalive_timeout, State),
     send_req(State, Body, Sender, current_time() + Timeout);
-send_req(#{in_flight := InFlight, in_flight_limit := Limit} = State, Body, Sender, Time) when
-      length(InFlight) > Limit ->
-    enqueue_req(State, Body, Sender, Time);
 send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
     Seq = (maps:get(seq, State, 0) rem 16#7FFFFFFF) + 1,
     RespDeadline = current_time() + maps:get(keepalive_timeout, State),
@@ -576,68 +637,11 @@ send_pkt(State, Status, Seq, Body) ->
                [Status, Seq, pp(Body)]),
     sock_send(State, Data).
 
--spec enqueue_req(state(), valid_pdu(), sender(), millisecs()) -> state().
-enqueue_req(State, Body, Sender, Time) ->
-    State3 = case is_overloaded(State) of
-                 false -> State;
-                 true ->
-                     State1 = report_overload(State),
-                     State2 = drop_stale_requests(State1),
-                     case is_overloaded(State2) of
-                         true -> discard_all_requests(overloaded, State2);
-                         false -> State2
-                     end
-             end,
-    #{rq := RQ, rq_size := Size} = State3,
-    RQ1 = queue:in({Time, Body, Sender}, RQ),
-    State3#{rq => RQ1, rq_size => Size+1}.
-
--spec dequeue_req(state()) -> state().
-dequeue_req(#{rq := RQ, rq_size := Size} = State) ->
-    case queue:out(RQ) of
-        {{value, {Time, Body, Sender}}, RQ1} ->
-            State1 = State#{rq => RQ1, rq_size => Size-1},
-            case current_time() >= Time of
-                true -> dequeue_req(State1);
-                false -> send_req(State1, Body, Sender, Time)
-            end;
-        {empty, _} ->
-            State1 = unset_request_timeout(State),
-            set_keepalive_timeout(State1, esme)
-    end.
-
 -spec discard_in_flight_requests(error_reason(), state()) -> state().
 discard_in_flight_requests(Reason, #{in_flight := InFlight} = State) ->
     lists:foldr(fun({_Seq, {Time, _, Sender}}, State1) ->
                         reply(State1, {error, Reason}, Time, Sender)
                 end, State#{in_flight => []}, InFlight).
-
--spec discard_all_requests(error_reason(), state()) -> state().
-discard_all_requests(Reason, #{rq := RQ} = State) ->
-    State2 = lists:foldl(
-               fun({Time, _, Sender}, State1) ->
-                       reply(State1, {error, Reason}, Time, Sender)
-               end, State, queue:to_list(RQ)),
-    State2#{rq => queue:new(), rq_size => 0}.
-
--spec drop_stale_requests(state()) -> state().
-drop_stale_requests(#{rq := RQ, rq_size := Size} = State) ->
-    case queue:out(RQ) of
-        {{value, {Time, _, Sender}}, RQ1} ->
-            case current_time() >= Time of
-                true ->
-                    State1 = reply(State, {error, stale}, Time, Sender),
-                    drop_stale_requests(State1#{rq => RQ1, rq_size => Size-1});
-                false ->
-                    State
-            end;
-        {empty, _} ->
-            State
-    end.
-
--spec is_overloaded(state()) -> boolean().
-is_overloaded(#{rq_size := Size, rq_limit := Limit}) ->
-    Size >= Limit.
 
 %%%-------------------------------------------------------------------
 %%% State transitions
@@ -647,14 +651,14 @@ is_overloaded(#{rq_size := Size, rq_limit := Limit}) ->
                        gen_statem:event_handler_result(statename()).
 reconnect(Reason, StateName, #{reconnect := true} = State) ->
     sock_close(State),
-    State1 = drop_stale_requests(discard_in_flight_requests(Reason, State)),
+    State1 = discard_in_flight_requests(Reason, State),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
     State3 = maps:without([socket, transport, buf, seq,
                            keepalive_time, response_time],
                           State2),
     {next_state, connecting, State3, reconnect_timeout(State3)};
 reconnect(Reason, StateName, #{reconnect := false} = State) ->
-    State1 = discard_all_requests(Reason, discard_in_flight_requests(Reason, State)),
+    State1 = discard_in_flight_requests(Reason, State),
     State2 = callback(handle_disconnected, Reason, StateName, State1),
     {stop, normal, State2}.
 
@@ -667,25 +671,43 @@ bind(#{role := Role} = State) ->
     State2 = maps:without([keepalive_time, response_time], State1),
     {next_state, binding, State2, bind_timeout(State2)}.
 
+-spec keep_state(state()) -> gen_statem:event_handler_result(statename()).
+keep_state(State) ->
+    keep_state(State, []).
+
+-spec keep_state(state(), [gen_statem:action()]) ->
+          gen_statem:event_handler_result(statename()).
+keep_state(State, Actions) ->
+    {keep_state, State, set_timeouts(State) ++ Actions}.
+
 -spec next_state(statename(), state()) ->
                         gen_statem:event_handler_result(statename()).
-next_state(StateName, #{keepalive_time := KeepAliveTime,
-                        response_time := ResponseTime} = State) ->
+next_state(StateName, State) ->
+    next_state(StateName, State, []).
+
+-spec next_state(statename(), state(), [gen_statem:action()]) ->
+                        gen_statem:event_handler_result(statename()).
+next_state(StateName, State, Actions) ->
+    {next_state, StateName, State, set_timeouts(State) ++ Actions}.
+
+-spec set_timeouts(state()) -> [gen_statem:action()].
+set_timeouts(#{keepalive_time := KeepAliveTime,
+               response_time := ResponseTime}) ->
     Time = min(KeepAliveTime, ResponseTime),
     Type = case Time of
                ResponseTime -> response;
                KeepAliveTime -> keepalive
            end,
     Timeout = max(0, Time - current_time()),
-    {next_state, StateName, State, {timeout, Timeout, Type}};
-next_state(StateName, #{keepalive_time := Time} = State) ->
+    [{timeout, Timeout, Type}];
+set_timeouts(#{keepalive_time := Time}) ->
     Timeout = max(0, Time - current_time()),
-    {next_state, StateName, State, {timeout, Timeout, keepalive}};
-next_state(StateName, #{response_time := Time} = State) ->
+    [{timeout, Timeout, keepalive}];
+set_timeouts(#{response_time := Time}) ->
     Timeout = max(0, Time - current_time()),
-    {next_state, StateName, State, {timeout, Timeout, response}};
-next_state(StateName, State) ->
-    {next_state, StateName, State}.
+    [{timeout, Timeout, response}];
+set_timeouts(_) ->
+    [].
 
 -spec current_time() -> millisecs().
 current_time() ->
@@ -694,7 +716,6 @@ current_time() ->
 -spec init_state(state(), peer_role()) -> state().
 init_state(State, Role) ->
     State#{vsn => ?VSN, role => Role,
-           rq => queue:new(), rq_size => 0,
            in_flight => []}.
 
 %%%-------------------------------------------------------------------
@@ -715,11 +736,6 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
     {_, {_, RespDeadline, _}} = lists:last(InFlight),
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
     State#{response_time => RespDeadline}.
-
--spec unset_request_timeout(state()) -> state().
-unset_request_timeout(State) ->
-    ?LOG_DEBUG("Unsetting request timeout"),
-    maps:remove(response_time, State).
 
 -spec set_keepalive_timeout(state(), peer_role()) -> state().
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
@@ -863,9 +879,14 @@ default_response(#submit_sm{}) -> #submit_sm_resp{}.
 report_disconnect(Reason, StateName,
                   #{role := esme, host := Host, port := Port}) ->
     Fmt = case StateName of
-              connecting -> "Failed to connect to SMSC at ~ts:~B: ~s";
-              binding -> "Failed to bind to SMSC at ~ts:~B: ~s";
-              bound -> "Connection with SMSC at ~ts:~B has failed: ~s"
+              connecting ->
+                  "Failed to connect to SMSC at ~ts:~B: ~s";
+              binding ->
+                  "Failed to bind to SMSC at ~ts:~B: ~s";
+              _ when StateName == bound;
+                     StateName == in_flight_limit_cooldown;
+                     StateName == rate_limit_cooldown ->
+                  "Connection with SMSC at ~ts:~B has failed: ~s"
           end,
     ?LOG_ERROR(Fmt, [Host, Port, format_error(Reason)]);
 report_disconnect(timeout, binding, #{role := smsc, port := Port}) ->
@@ -905,21 +926,6 @@ report_bound(#{role := esme, mode := Mode, host := Host, port := Port}) ->
     ?LOG_NOTICE("Successfully bound to SMSC at ~ts:~B as ~s",
                 [Host, Port, Mode]).
 
--spec report_overload(state()) -> state().
-report_overload(State) ->
-    Time = current_time(),
-    LastTime = maps:get(last_overload_report, State, 0),
-    case (Time - LastTime) >= timer:seconds(30) of
-        true ->
-            ?LOG_WARNING("Request queue is overfilled "
-                         "(current size = ~B, limit = ~p)",
-                         [maps:get(rq_size, State),
-                          maps:get(rq_limit, State)]),
-            State#{last_overload_report => Time};
-        false ->
-            State
-    end.
-
 -spec reverse_mode(mode()) -> mode().
 reverse_mode(transceiver) -> transceiver;
 reverse_mode(receiver) -> transmitter;
@@ -955,3 +961,42 @@ pp(submit_sm_resp, _) -> record_info(fields, submit_sm_resp);
 pp(unbind, _) -> record_info(fields, unbind);
 pp(unbind_resp, _) -> record_info(fields, unbind_resp);
 pp(_, _) -> no.
+
+%%%-------------------------------------------------------------------
+%%% Overload protection
+%%%-------------------------------------------------------------------
+-spec init_rate_limit(state()) -> state().
+init_rate_limit(#{req_per_sec := undefined} = State) ->
+    State;
+init_rate_limit(#{req_per_sec := Rps} = State) when is_integer(Rps) ->
+    State#{current_rps => {erlang:monotonic_time(second), 0}}.
+
+-spec check_limits(state()) ->
+          {ok, state()} |
+          {error, {statename(), state(), [gen_statem:action()]}}.
+check_limits(#{req_per_sec := undefined} = State) ->
+    check_in_flight(State);
+check_limits(#{req_per_sec := MaxRps, current_rps := {CurSecond, CurRate}} = State) ->
+    case erlang:monotonic_time(second) of
+        CurSecond when CurRate == MaxRps ->
+            Now = erlang:monotonic_time(millisecond),
+            % max here to ensure non negative timeout
+            Timeout = max(0, (CurSecond + 1) * 1000 - Now),
+            {error, {rate_limit_cooldown,
+                     State,
+                     [postpone,
+                      {state_timeout, Timeout, rate_limit_reset}]}};
+        CurSecond ->
+            check_in_flight(State#{current_rps => {CurSecond, CurRate + 1}});
+        NewSecond ->
+            check_in_flight(State#{current_rps => {NewSecond, 1}})
+    end.
+
+-spec check_in_flight(state()) ->
+          {ok, state()} |
+          {error, {statename(), state(), [gen_statem:action()]}}.
+check_in_flight(#{in_flight := InFlight, in_flight_limit := Limit} = State)
+  when length(InFlight) =< Limit ->
+    {ok, State};
+check_in_flight(State) ->
+    {error, {in_flight_limit_cooldown, State, [postpone]}}.
