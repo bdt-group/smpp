@@ -163,6 +163,7 @@ opts_to_state(Mod, Opts) ->
     ReconnectTimeout = maps:get(reconnect_timeout, Opts, ?RECONNECT_TIMEOUT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
+    ReqPerSec = maps:get(req_per_sec, Opts, undefined),
     State = Opts#{host => Host,
                   port => Port,
                   mode => Mode,
@@ -175,6 +176,7 @@ opts_to_state(Mod, Opts) ->
                   connect_timeout => ConnectTimeout,
                   reconnect_timeout => ReconnectTimeout,
                   bind_timeout => BindTimeout,
+                  req_per_sec => ReqPerSec,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of
         undefined ->
