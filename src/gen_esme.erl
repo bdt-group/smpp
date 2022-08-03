@@ -79,7 +79,7 @@
                         supervisor:child_spec().
 child_spec(Name, Mod, Opts) ->
     State = opts_to_state(Mod, Opts),
-    smpp_socket:child_spec(esme, get_id_by_name(Name), State, Name).
+    smpp_socket:child_spec(esme, smpp_socket:get_id_by_name(Name), State, Name).
 
 -spec start(module() | undefined, map()) -> {ok, pid()} | {error, term()}.
 start(Mod, Opts) ->
@@ -145,10 +145,6 @@ pp(Term) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-get_id_by_name({local, Name}) -> Name;
-get_id_by_name({via, _, Name}) -> Name;
-get_id_by_name({global, Name}) -> Name.
-
 opts_to_state(Mod, Opts) ->
     Host = maps:get(host, Opts, "localhost"),
     Port = maps:get(port, Opts, ?DEFAULT_PORT),
@@ -164,6 +160,7 @@ opts_to_state(Mod, Opts) ->
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     ReqPerSec = maps:get(req_per_sec, Opts, undefined),
+    MaxAwaitReqs = maps:get(max_await_reqs, Opts, undefined),
     State = Opts#{host => Host,
                   port => Port,
                   mode => Mode,
@@ -177,6 +174,7 @@ opts_to_state(Mod, Opts) ->
                   reconnect_timeout => ReconnectTimeout,
                   bind_timeout => BindTimeout,
                   req_per_sec => ReqPerSec,
+                  max_await_reqs => MaxAwaitReqs,
                   keepalive_timeout => KeepAliveTimeout},
     case Mod of
         undefined ->

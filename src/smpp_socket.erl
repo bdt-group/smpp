@@ -33,6 +33,7 @@
 -export([stop/1]).
 -export([format_error/1]).
 -export([pp/1]).
+-export([get_id_by_name/1]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
@@ -49,12 +50,15 @@
 -define(is_receiver(Mode), (Mode == receiver orelse Mode == transceiver)).
 
 -type state() :: #{vsn := non_neg_integer(),
+                   id := term(),
                    role := peer_role(),
                    reconnect := boolean(),
                    proxy := boolean(),
                    in_flight := [{seq(), in_flight_request()}],
                    in_flight_limit := pos_integer(),
                    req_per_sec := undefined | pos_integer(),
+                   max_await_reqs := undefined | pos_integer(),
+                   await_reqs_counter := counters:counters_ref(),
                    callback => module(),
                    mode => mode(),
                    host => string(),
@@ -86,7 +90,7 @@
 % to handle all of them regardless.
 % Relative frequency of occurence of each one of them depends on
 % SMSC implementation and one's timings.
--type flow_control_reason() :: sending_expired | rate_limit | in_flight_limit.
+-type flow_control_reason() :: sending_expired | rate_limit | in_flight_limit | overload.
 -type error_reason() :: closed | timeout | unbinded |
                         system_shutdown | system_error |
                         {inet, inet:posix()} |
@@ -174,21 +178,36 @@ send_async(Ref, Pkt) ->
 
 -spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback()) -> ok.
 send_async(Ref, Pkt, Fun) ->
-    gen_statem:cast(Ref, {send_req, Pkt, Fun, undefined}).
+    case enqueue_req(Ref) of
+        ok ->
+            gen_statem:cast(Ref, {send_req, Pkt, Fun, undefined});
+        error ->
+            {error, overload}
+    end.
 
 -spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback(), millisecs()) -> ok.
 send_async(Ref, Pkt, Fun, Timeout) ->
-    Time = current_time() + Timeout,
-    gen_statem:cast(Ref, {send_req, Pkt, Fun, Time}).
+    case enqueue_req(Ref, Timeout) of
+        ok ->
+            Time = current_time() + Timeout,
+            gen_statem:cast(Ref, {send_req, Pkt, Fun, Time});
+        error ->
+            {error, overload}
+    end.
 
 -spec send(gen_statem:server_ref(), valid_pdu(), millisecs()) -> send_reply().
 send(Ref, Pkt, Timeout) ->
     Time = current_time() + Timeout,
-    try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
-    catch exit:{timeout, {gen_statem, call, _}} ->
-            {error, timeout};
-          exit:{_, {gen_statem, call, _}} ->
-            {error, closed}
+    case enqueue_req(Ref, Timeout) of
+        ok ->
+            try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
+            catch exit:{timeout, {gen_statem, call, _}} ->
+                    {error, timeout};
+                  exit:{_, {gen_statem, call, _}} ->
+                    {error, closed}
+            end;
+        error ->
+            {error, overload}
     end.
 
 -spec format_error(error_reason()) -> string().
@@ -226,6 +245,11 @@ format_error({bind_failed, Status}) ->
 pp(Term) ->
     io_lib_pretty:print(Term, fun pp/2).
 
+-spec get_id_by_name({local, T} | {via, module(), T} | {global, T}) -> T.
+get_id_by_name({local, Name}) -> Name;
+get_id_by_name({via, _, Name}) -> Name;
+get_id_by_name({global, Name}) -> Name.
+
 %%%===================================================================
 %%% gen_statem callbacks
 %%%===================================================================
@@ -254,7 +278,9 @@ init({Ref, Transport, State}) ->
     end;
 init(State) ->
     self() ! connect,
-    {ok, connecting, init_rate_limit(State)}.
+    State1 = init_rate_limit(State),
+    State2 = init_req_counter(State1),
+    {ok, connecting, State2}.
 
 -spec connecting(gen_statem:event_type(), term(), state()) ->
                         gen_statem:event_handler_result(statename()).
@@ -318,11 +344,13 @@ bound({call, From}, {send_req, Body, Time}, State) ->
 bound(cast, {send_req, Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
+            ok = dequeue_reg(State),
             State1 = reply(State, {error, sending_expired}, current_time(), Sender),
             keep_state(State1);
         false ->
             case check_limits(State) of
                 {ok, State1} ->
+                    ok = dequeue_reg(State),
                     State2 = send_req(State1, Body, Sender, Time),
                     keep_state(State2);
                 {error, {NextState, State1, Actions}} ->
@@ -348,6 +376,7 @@ rate_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
 rate_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
+            ok = dequeue_reg(State),
             State1 = reply(State, {error, rate_limit}, current_time(), Sender),
             keep_state(State1);
         false ->
@@ -367,6 +396,7 @@ in_flight_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
 in_flight_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
+            ok = dequeue_reg(State),
             State1 = reply(State, {error, in_flight_limit}, current_time(), Sender),
             keep_state(State1);
         false ->
@@ -965,11 +995,14 @@ pp(_, _) -> no.
 %%%-------------------------------------------------------------------
 %%% Overload protection
 %%%-------------------------------------------------------------------
+-define(PT_MAX_RPS(Id), {?MODULE, Id, max_rps}).
 -spec init_rate_limit(state()) -> state().
 init_rate_limit(#{req_per_sec := undefined} = State) ->
     State;
-init_rate_limit(#{req_per_sec := Rps} = State) when is_integer(Rps) ->
+init_rate_limit(#{req_per_sec := Rps, id := Id} = State) when is_integer(Rps) ->
+    ok = persistent_term:put(?PT_MAX_RPS(Id), Rps),
     State#{current_rps => {erlang:monotonic_time(second), 0}}.
+
 
 -spec check_limits(state()) ->
           {ok, state()} |
@@ -1000,3 +1033,69 @@ check_in_flight(#{in_flight := InFlight, in_flight_limit := Limit} = State)
     {ok, State};
 check_in_flight(State) ->
     {error, {in_flight_limit_cooldown, State, [postpone]}}.
+
+%%%-------------------------------------------------------------------
+%%% ESME back pressure
+%%%-------------------------------------------------------------------
+-define(PT_MAX_AWAIT_REQS(Id), {?MODULE, Id, max_await_reqs}).
+-define(PT_AWAIT_REQS_COUNTER(Id), {?MODULE, Id, await_reqs_counter}).
+
+-spec init_req_counter(state()) -> state().
+init_req_counter(#{max_await_reqs := undefined} = State) ->
+    State;
+init_req_counter(#{max_await_reqs := MaxAwaitReqs, id := Id} = State) ->
+    %% Back pressure here does not rely on exact counter value by design.
+    %% I.e. a bit more than MaxAwaitReqs can be queued due to a natural race
+    %% but then back pressure will kick in anyway. That is why 'write_concurrency'
+    %% counters option fits well here.
+    CounterRef = counters:new(1, [write_concurrency]),
+    ok = persistent_term:put(?PT_AWAIT_REQS_COUNTER(Id), CounterRef),
+    ok = persistent_term:put(?PT_MAX_AWAIT_REQS(Id), MaxAwaitReqs),
+    State#{await_reqs_counter => CounterRef}.
+
+-spec enqueue_req(gen_statem:server_ref()) -> ok | error.
+enqueue_req(Ref) ->
+    enqueue_req(Ref, undefined).
+
+-spec enqueue_req(gen_statem:server_ref(), millisecs() | undefined) -> ok | error.
+enqueue_req(Pid, _Timeout) when is_pid(Pid) ->
+    %% TODO: add back pressure support for direct Pid invocations.
+    ok;
+enqueue_req(Name, Timeout) ->
+    Id = get_id_by_name(Name),
+    case persistent_term:get(?PT_MAX_AWAIT_REQS(Id), undefined) of
+        undefined ->
+            ok;
+        MaxAwaitReqs ->
+            CounterRef = persistent_term:get(?PT_AWAIT_REQS_COUNTER(Id)),
+            case counters:get(CounterRef, 1) of
+                Counter when Counter >= MaxAwaitReqs ->
+                    error;
+                Counter when Timeout /= undefined ->
+                    case is_timeout_feasible(Timeout, Counter, Id) of
+                        true ->
+                            ok = counters:add(CounterRef, 1, 1);
+                        false ->
+                            error
+                    end;
+                _ ->
+                    ok = counters:add(CounterRef, 1, 1)
+            end
+    end.
+
+-spec is_timeout_feasible(millisecs(), non_neg_integer(), term()) -> boolean().
+is_timeout_feasible(Timeout, Counter, Id) ->
+    case persistent_term:get(?PT_MAX_RPS(Id), undefined) of
+        undefined ->
+            true;
+        Rps ->
+            TimeoutSec = Timeout div 1000,
+            QueuedSec = Counter / Rps,
+            TimeoutSec > QueuedSec
+    end.
+
+-spec dequeue_reg(state()) -> ok.
+dequeue_reg(#{max_await_reqs := undefined}) ->
+    ok;
+dequeue_reg(#{await_reqs_counter := CounterRef}) ->
+    ok = counters:sub(CounterRef, 1, 1).
