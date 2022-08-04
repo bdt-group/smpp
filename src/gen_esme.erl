@@ -107,17 +107,17 @@ start_link(Name, Mod, Opts) ->
 send(Ref, Pkt, Timeout) ->
     smpp_socket:send(Ref, Pkt, Timeout).
 
--spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
+-spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok | {error, overload}.
 send_async(Ref, Pkt) ->
     smpp_socket:send_async(Ref, Pkt).
 
 -spec send_async(gen_statem:server_ref(), valid_pdu(),
-                 undefined | send_callback()) -> ok.
+                 undefined | send_callback()) -> ok | {error, overload}.
 send_async(Ref, Pkt, Fun) ->
     smpp_socket:send_async(Ref, Pkt, Fun).
 
 -spec send_async(gen_statem:server_ref(), valid_pdu(),
-                 undefined | send_callback(), pos_integer()) -> ok.
+                 undefined | send_callback(), pos_integer()) -> ok | {error, overload}.
 send_async(Ref, Pkt, Fun, Timeout) ->
     smpp_socket:send_async(Ref, Pkt, Fun, Timeout).
 
