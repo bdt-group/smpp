@@ -90,7 +90,7 @@
 % to handle all of them regardless.
 % Relative frequency of occurence of each one of them depends on
 % SMSC implementation and one's timings.
--type flow_control_reason() :: sending_expired | rate_limit | in_flight_limit | overload.
+-type flow_control_reason() :: sending_expired | rate_limit | in_flight_limit.
 -type error_reason() :: closed | timeout | unbinded |
                         system_shutdown | system_error |
                         {inet, inet:posix()} |
@@ -102,7 +102,7 @@
 -type sender() :: {pid(), term()} | send_callback() | undefined.
 -type in_flight_request() :: {ReqDeadline :: millisecs(), RespDeadline :: millisecs(), sender()}.
 -type send_reply() :: {ok, {non_neg_integer(), valid_pdu()}} |
-                      {error, error_reason()}.
+                      {error, error_reason() | overload}.
 -type send_callback() :: fun((send_reply() | {error, flow_control_reason()}, state()) -> state()).
 
 -export_type([error_reason/0, socket_name/0]).
@@ -116,11 +116,13 @@
                 (esme, term(), state(), socket_name()) -> supervisor:child_spec().
 child_spec(smsc, Id, State, RanchOpts) ->
     State1 = init_state(State, smsc),
-    ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State1);
+    State2 = State1#{id => Id},
+    ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State2);
 child_spec(esme, Id, State, Name) ->
     State1 = init_state(State, esme),
+    State2 = State1#{id => Id},
     #{id => Id,
-      start => {?MODULE, start_link, [Name, State1]},
+      start => {?MODULE, start_link, [Name, State2]},
       restart => transient,
       type => worker,
       shutdown => timer:seconds(30),
@@ -172,11 +174,12 @@ stop(#{} = State) ->
 stop(Ref) ->
     gen_statem:cast(Ref, stop).
 
--spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok.
+-spec send_async(gen_statem:server_ref(), valid_pdu()) -> ok | {error, overload}.
 send_async(Ref, Pkt) ->
     send_async(Ref, Pkt, undefined).
 
--spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback()) -> ok.
+-spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback()
+) -> ok | {error, overload}.
 send_async(Ref, Pkt, Fun) ->
     case enqueue_req(Ref) of
         ok ->
@@ -185,7 +188,8 @@ send_async(Ref, Pkt, Fun) ->
             {error, overload}
     end.
 
--spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback(), millisecs()) -> ok.
+-spec send_async(gen_statem:server_ref(), valid_pdu(), undefined | send_callback(), millisecs()
+) -> ok | {error, overload}.
 send_async(Ref, Pkt, Fun, Timeout) ->
     case enqueue_req(Ref, Timeout) of
         ok ->
