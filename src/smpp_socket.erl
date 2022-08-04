@@ -116,13 +116,11 @@
                 (esme, term(), state(), socket_name()) -> supervisor:child_spec().
 child_spec(smsc, Id, State, RanchOpts) ->
     State1 = init_state(State, smsc),
-    State2 = State1#{id => Id},
-    ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State2);
+    ranch:child_spec(Id, ranch_tcp, RanchOpts, ?MODULE, State1);
 child_spec(esme, Id, State, Name) ->
     State1 = init_state(State, esme),
-    State2 = State1#{id => Id},
     #{id => Id,
-      start => {?MODULE, start_link, [Name, State2]},
+      start => {?MODULE, start_link, [Name, State1]},
       restart => transient,
       type => worker,
       shutdown => timer:seconds(30),
