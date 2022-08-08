@@ -518,13 +518,7 @@ send_bind_req(#{role := esme, mode := Mode,
 -spec handle_bind_resp(pdu(), state()) -> {ok, statename(), state()} |
                                           {error, error_reason(), state()}.
 handle_bind_resp(#pdu{command_status = Status}, State) ->
-    case Status of
-        ?ESME_ROK ->
-            State1 = callback(handle_bound, State),
-            {ok, bound, State1};
-        _ ->
-            {error, {bind_failed, Status}, State}
-    end.
+    process_result(State, Status).
 
 -spec handle_bind_req(pdu(), state()) -> {ok, statename(), state()} |
                                          {error, error_reason(), state()}.
@@ -532,17 +526,22 @@ handle_bind_req(#pdu{body = Bind} = Pkt,
             #{role := smsc} = State) ->
     {Status, BindResp, State1} = callback(handle_bind, Bind, State),
     State2 = send_resp(State1, BindResp, Pkt, Status),
-    case Status of
-        ?ESME_ROK ->
-            State3 = callback(handle_bound, State2),
-            {ok, bound, State3};
-        _ ->
-            {error, {bind_failed, Status}, State2}
-    end;
+    process_result(State2, Status);
 handle_bind_req(Pkt, State) ->
     report_unexpected_pkt(Pkt, binding, State),
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVBNDSTS),
     {ok, binding, State1}.
+
+-spec process_result(state(), non_neg_integer()) -> {ok, statename(), state()} |
+                                                    {error, error_reason(), state()}.
+process_result(State, Status) ->
+    case Status of
+        ?ESME_ROK ->
+            State1 = callback(handle_bound, State),
+            {ok, bound, State1};
+        _ ->
+            {error, {bind_failed, Status}, State}
+    end.
 
 %%%-------------------------------------------------------------------
 %%% Decoder
