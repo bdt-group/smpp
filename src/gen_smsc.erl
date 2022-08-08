@@ -42,12 +42,17 @@
 -type send_reply() :: smpp_socket:send_reply().
 -type event_type() :: gen_statem:event_type().
 -type from() :: {pid(), term()}. %% gen_statem:from()
+-type bind_pdu() :: bind_receiver() | bind_transceiver() | bind_transmitter().
+-type bind_resp() :: bind_receiver_resp() | bind_transceiver_resp() | bind_transmitter_resp().
 
 -export_type([state/0, error_reason/0, statename/0, send_reply/0, send_callback/0]).
 -export_type([event_type/0, from/0]).
 
 -callback handle_connected(state()) -> state() | ignore.
 -callback handle_disconnected(error_reason(), statename(), state()) -> state() | ignore.
+-callback handle_bind(bind_pdu(), state()) -> {non_neg_integer(), state()} |
+                                     {non_neg_integer(), bind_resp(), state()} |
+                                     ignore.
 -callback handle_bound(state()) -> state() | ignore.
 -callback handle_deliver(deliver_sm(), state()) -> {non_neg_integer(), state()} |
                                                    {non_neg_integer(), deliver_sm_resp(), state()} |
@@ -61,6 +66,7 @@
 %% All callbacks are optional
 -optional_callbacks([handle_connected/1,
                      handle_disconnected/3,
+                     handle_bind/2,
                      handle_bound/1,
                      handle_deliver/2,
                      handle_submit/2,
