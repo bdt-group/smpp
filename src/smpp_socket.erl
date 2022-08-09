@@ -101,6 +101,7 @@
                       {error, error_reason()}.
 -type send_callback() :: fun((send_reply() | {error, flow_control_reason()}, state()) -> state()).
 
+
 -export_type([error_reason/0, socket_name/0]).
 -export_type([send_reply/0, send_callback/0]).
 -export_type([statename/0, state/0]).
@@ -517,6 +518,23 @@ send_bind_req(#{role := esme, mode := Mode,
 -spec handle_bind_resp(pdu(), state()) -> {ok, statename(), state()} |
                                           {error, error_reason(), state()}.
 handle_bind_resp(#pdu{command_status = Status}, State) ->
+    process_result(State, Status).
+
+-spec handle_bind_req(pdu(), state()) -> {ok, statename(), state()} |
+                                         {error, error_reason(), state()}.
+handle_bind_req(#pdu{body = Bind} = Pkt,
+            #{role := smsc} = State) ->
+    {Status, BindResp, State1} = callback(handle_bind, Bind, State),
+    State2 = send_resp(State1, BindResp, Pkt, Status),
+    process_result(State2, Status);
+handle_bind_req(Pkt, State) ->
+    report_unexpected_pkt(Pkt, binding, State),
+    State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVBNDSTS),
+    {ok, binding, State1}.
+
+-spec process_result(state(), non_neg_integer()) -> {ok, statename(), state()} |
+                                                    {error, error_reason(), state()}.
+process_result(State, Status) ->
     case Status of
         ?ESME_ROK ->
             State1 = callback(handle_bound, State),
@@ -524,45 +542,6 @@ handle_bind_resp(#pdu{command_status = Status}, State) ->
         _ ->
             {error, {bind_failed, Status}, State}
     end.
-
--spec handle_bind_req(pdu(), state()) -> {ok, statename(), state()}.
-handle_bind_req(#pdu{body = #bind_transceiver{
-                               system_id = SysId,
-                               interface_version = Ver}} = Pkt,
-            #{role := smsc} = State) ->
-    BindResp = #bind_transceiver_resp{
-                  system_id = SysId,
-                  sc_interface_version = Ver},
-    State1 = State#{system_id => SysId, mode => transceiver},
-    State2 = send_resp(State1, BindResp, Pkt),
-    State3 = callback(handle_bound, State2),
-    {ok, bound, State3};
-handle_bind_req(#pdu{body = #bind_receiver{
-                               system_id = SysId,
-                               interface_version = Ver}} = Pkt,
-            #{role := smsc} = State) ->
-    BindResp = #bind_receiver_resp{
-                  system_id = SysId,
-                  sc_interface_version = Ver},
-    State1 = State#{system_id => SysId, mode => transmitter},
-    State2 = send_resp(State1, BindResp, Pkt),
-    State3 = callback(handle_bound, State2),
-    {ok, bound, State3};
-handle_bind_req(#pdu{body = #bind_transmitter{
-                               system_id = SysId,
-                               interface_version = Ver}} = Pkt,
-            #{role := smsc} = State) ->
-    BindResp = #bind_transmitter_resp{
-                  system_id = SysId,
-                  sc_interface_version = Ver},
-    State1 = State#{system_id => SysId, mode => receiver},
-    State2 = send_resp(State1, BindResp, Pkt),
-    State3 = callback(handle_bound, State2),
-    {ok, bound, State3};
-handle_bind_req(Pkt, State) ->
-    report_unexpected_pkt(Pkt, binding, State),
-    State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVBNDSTS),
-    {ok, binding, State1}.
 
 %%%-------------------------------------------------------------------
 %%% Decoder
@@ -852,6 +831,8 @@ default_callback(_, State) ->
     State.
 
 -spec default_callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), valid_pdu(), state()}.
+default_callback(handle_bind, Body, State) ->
+    default_bind(Body, State);
 default_callback(_, Body, State) ->
     {?ESME_RINVCMDID, default_response(Body), State}.
 
@@ -871,6 +852,43 @@ default_callback(handle_event, EventType, Msg, StateName, State) ->
                       (submit_sm()) -> submit_sm_resp().
 default_response(#deliver_sm{}) -> #deliver_sm_resp{};
 default_response(#submit_sm{}) -> #submit_sm_resp{}.
+
+
+-spec default_bind(pdu(), state()) ->
+    {pos_integer(),
+        bind_receiver_resp() |
+        bind_transceiver_resp() |
+        bind_transmitter_resp() |
+        generic_nack(), state()}.
+default_bind(#pdu{body = #bind_transceiver{
+                               system_id = SysId,
+                               interface_version = Ver}},
+            #{role := smsc} = State) ->
+    BindResp = #bind_transceiver_resp{
+                  system_id = SysId,
+                  sc_interface_version = Ver},
+    State1 = State#{system_id => SysId, mode => transmitter},
+    {?ESME_ROK, BindResp, State1};
+default_bind(#pdu{body = #bind_receiver{
+                               system_id = SysId,
+                               interface_version = Ver}},
+            #{role := smsc} = State) ->
+    BindResp = #bind_receiver_resp{
+                  system_id = SysId,
+                  sc_interface_version = Ver},
+    State1 = State#{system_id => SysId, mode => transmitter},
+    {?ESME_ROK, BindResp, State1};
+default_bind(#pdu{body = #bind_transmitter{
+                               system_id = SysId,
+                               interface_version = Ver}},
+            #{role := smsc} = State) ->
+    BindResp = #bind_transmitter_resp{
+                  system_id = SysId,
+                  sc_interface_version = Ver},
+    State1 = State#{system_id => SysId, mode => receiver},
+    {?ESME_ROK, BindResp, State1};
+default_bind(_, State) ->
+    {?ESME_RINVBNDSTS, #generic_nack{}, State}.
 
 %%%-------------------------------------------------------------------
 %%% Logging
