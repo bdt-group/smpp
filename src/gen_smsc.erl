@@ -135,11 +135,12 @@ pp(Term) ->
 -spec opts_to_state(module() | undefined, map()) -> {state(), ranch_tcp:opts()}.
 opts_to_state(Mod, Opts) ->
     Port = maps:get(port, Opts, ?DEFAULT_PORT),
+    IP = maps:get(ip, Opts, ?DEFAULT_IP),
     RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     IsProxy = maps:get(proxy, Opts, false),
-    RanchOpts = [{port, Port}],
+    RanchOpts = [{ip, IP}, {port, Port}],
     State = Opts#{rq_limit => RQLimit,
                   reconnect => false,
                   proxy => IsProxy,

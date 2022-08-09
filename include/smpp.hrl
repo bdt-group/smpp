@@ -9,3 +9,4 @@
 -include_lib("smpp34pdu/include/smpp34pdu.hrl").
 
 -define(DEFAULT_PORT, 2775).
+-define(DEFAULT_IP, {0,0,0,0}).
