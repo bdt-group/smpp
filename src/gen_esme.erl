@@ -54,6 +54,7 @@
 -callback handle_connected(state()) -> state() | ignore.
 -callback handle_disconnected(error_reason(), statename(), state()) -> state() | ignore.
 -callback handle_bound(state()) -> state() | ignore.
+-callback handle_sending(submit_sm(), state()) -> any().
 -callback handle_deliver(deliver_sm(), state()) -> {non_neg_integer(), state()} |
                                                    {non_neg_integer(), deliver_sm_resp(), state()} |
                                                    ignore.
@@ -67,6 +68,7 @@
 -optional_callbacks([handle_connected/1,
                      handle_disconnected/3,
                      handle_bound/1,
+                     handle_sending/2,
                      handle_deliver/2,
                      handle_submit/2,
                      handle_event/4,
