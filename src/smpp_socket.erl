@@ -628,6 +628,13 @@ send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
     Seq = (maps:get(seq, State, 0) rem 16#7FFFFFFF) + 1,
     RespDeadline = current_time() + maps:get(keepalive_timeout, State),
     State1 = State#{seq => Seq, in_flight => [{Seq, {Time, RespDeadline, Sender}} | InFlight]},
+    case Body of
+        #submit_sm{} ->
+            _ = callback(handle_sending, Body, State),
+            ok;
+        _ ->
+            ok
+    end,
     send_pkt(State1, ?ESME_ROK, Seq, Body),
     State2 = unset_keepalive_timeout(State1, esme),
     set_request_timeout(State2).
