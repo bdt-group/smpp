@@ -191,9 +191,11 @@ send_async(Ref, Pkt, Fun) ->
 ) -> ok | {error, overload}.
 send_async(Ref, Pkt, Fun, Timeout) ->
     case enqueue_req(Ref, Timeout) of
-        ok ->
+        ok when is_integer(Timeout) ->
             Time = current_time() + Timeout,
             gen_statem:cast(Ref, {send_req, Pkt, Fun, Time});
+        ok ->
+            gen_statem:cast(Ref, {send_req, Pkt, Fun, undefined});
         error ->
             {error, overload}
     end.
@@ -344,6 +346,15 @@ bound({call, From}, {send_req, Body, Time}, State) ->
     % send request operation is the same for call and cast methods,
     % fun send_req/4 is polymorphic on 3rd argument for pid/tag and callback fun
     bound(cast, {send_req, Body, From, Time}, State);
+bound(cast, {send_req, Body, Sender, undefined}, State) ->
+    case check_limits(State) of
+        {ok, State1} ->
+            ok = dequeue_reg(State),
+            State2 = send_req(State1, Body, Sender, undefined),
+            keep_state(State2);
+        {error, {NextState, State1, Actions}} ->
+            next_state(NextState, State1, Actions)
+    end;
 bound(cast, {send_req, Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
@@ -376,6 +387,8 @@ rate_limit_cooldown(state_timeout, rate_limit_reset, State) ->
     next_state(bound, State);
 rate_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
     rate_limit_cooldown(cast, {send_req, Body, From, Time}, State);
+rate_limit_cooldown(cast, {send_req, _Body, _Sender, undefined}, State) ->
+    keep_state(State, [postpone]);
 rate_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
@@ -396,6 +409,8 @@ in_flight_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
     keep_state(State, [{next_event, timeout, keepalive}]);
 in_flight_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
     in_flight_limit_cooldown(cast, {send_req, Body, From, Time}, State);
+in_flight_limit_cooldown(cast, {send_req, _Body, _Sender, undefined}, State) ->
+    keep_state(State, [postpone]);
 in_flight_limit_cooldown(cast, {send_req, _Body, Sender, Time}, State) ->
     case current_time() > Time of
         true ->
