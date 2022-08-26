@@ -472,10 +472,12 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                             rate_limit_cooldown -> StateName;
                             _ -> bound
                         end,
-            {ok, NextState, State1};
+            State2 = set_keepalive_timeout(State1, esme),
+            {ok, NextState, State2};
         false ->
             report_unexpected_response(Pkt, StateName, State),
-            {ok, StateName, State}
+            State2 = set_keepalive_timeout(State, esme),
+            {ok, StateName, State2}
     end;
 handle_pkt(#pdu{command_id = CmdID} = Pkt, StateName, State) when ?is_response(CmdID) ->
     report_unexpected_response(Pkt, StateName, State),
