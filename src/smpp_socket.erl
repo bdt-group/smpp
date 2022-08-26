@@ -774,12 +774,9 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
     State#{response_time => RespDeadline}.
 
 -spec set_keepalive_timeout(state(), peer_role()) -> state().
-set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
+set_keepalive_timeout(#{keepalive_timeout := Timeout} = State, _) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
-    State#{keepalive_time => current_time() + Timeout};
-set_keepalive_timeout(#{role := StateRole} = State, Role) ->
-    ?LOG_DEBUG("Cant set keepalive timeout due to role mismatch, current role:~p expected role:~p", [StateRole, Role]),
-    State.
+    State#{keepalive_time => current_time() + Timeout}.
 
 -spec unset_keepalive_timeout(state(), peer_role()) -> state().
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
