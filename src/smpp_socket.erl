@@ -457,7 +457,8 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
         {value, _, InFlight1} when StateName == binding ->
             case handle_bind_resp(Pkt, State#{in_flight => InFlight1}) of
                 {ok, bound, State1} ->
-                    {ok, bound, State1};
+                    State2 = set_keepalive_timeout(State1, esme),
+                    {ok, bound, State2};
                 Other ->
                     Other
             end;
@@ -774,7 +775,8 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     State#{keepalive_time => current_time() + Timeout};
-set_keepalive_timeout(State, _) ->
+set_keepalive_timeout(#{role := StateRole} = State, Role) ->
+    ?LOG_DEBUG("Cant set keepalive timeout due to role mismatch, current role:~p expected role:~p", [StateRole, Role]),
     State.
 
 -spec unset_keepalive_timeout(state(), peer_role()) -> state().
