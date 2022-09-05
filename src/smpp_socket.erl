@@ -773,9 +773,6 @@ bind_timeout(#{bind_timeout := Timeout}) ->
     {state_timeout, Timeout, reconnect}.
 
 -spec set_request_timeout(state()) -> state().
-set_request_timeout(#{in_flight := []} = State) ->
-    ?LOG_DEBUG("Unsetting request timeout, we do not expect responses"),
-    maps:without([response_time], State);
 set_request_timeout(#{in_flight := InFlight} = State) ->
     {_, {_, RespDeadline, _}} = lists:last(InFlight),
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
@@ -789,7 +786,7 @@ set_keepalive_timeout(#{keepalive_timeout := Timeout} = State, _) ->
 -spec unset_keepalive_timeout(state(), peer_role()) -> state().
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
     ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(response_time, State).
+    maps:remove(keepalive_time, State).
 
 %%%-------------------------------------------------------------------
 %%% Socket management
