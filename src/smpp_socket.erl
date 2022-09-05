@@ -339,7 +339,7 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 bound(timeout, keepalive, State) ->
     State1 = send_req(State, #enquire_link{}),
-    keep_state(State1);
+    keep_state(State1, []);
 bound(timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
 bound({call, From}, {send_req, Body, Time}, State) ->
@@ -351,7 +351,7 @@ bound(cast, {send_req, Body, Sender, undefined}, State) ->
         {ok, State1} ->
             ok = dequeue_reg(State),
             State2 = send_req(State1, Body, Sender, undefined),
-            keep_state(State2);
+            keep_state(State2, []);
         {error, {NextState, State1, Actions}} ->
             next_state(NextState, State1, Actions)
     end;
@@ -360,7 +360,7 @@ bound(cast, {send_req, Body, Sender, Time}, State) ->
         true ->
             ok = dequeue_reg(State),
             State1 = reply(State, {error, sending_expired}, current_time(), Sender),
-            keep_state(State1);
+            keep_state(State1, []);
         false ->
             case check_limits(State) of
                 {ok, State1} ->
@@ -375,7 +375,7 @@ bound(cast, stop, State) ->
     {stop, normal, State};
 bound(EventType, Msg, State) ->
     State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
-    keep_state(State1).
+    keep_state(State1, []).
 
 -spec rate_limit_cooldown(gen_statem:event_type(), term(), state()) ->
           gen_statem:event_handler_result(statename()).
