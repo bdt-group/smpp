@@ -474,7 +474,10 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                             rate_limit_cooldown -> StateName;
                             _ -> bound
                         end,
-            State2 = set_keepalive_timeout(State1, esme),
+            State2 = case State1 of
+                #{in_flight := []} -> set_keepalive_timeout(maps:without([response_time], State1), esme);
+                #{in_flignt := _} -> set_request_timeout(State1)
+            end,
             {ok, NextState, State2};
         false ->
             report_unexpected_response(Pkt, StateName, State),
@@ -770,6 +773,9 @@ bind_timeout(#{bind_timeout := Timeout}) ->
     {state_timeout, Timeout, reconnect}.
 
 -spec set_request_timeout(state()) -> state().
+set_request_timeout(#{in_flight := []} = State) ->
+    ?LOG_DEBUG("Unsetting request timeout, we do not expect responses"),
+    maps:without([response_time], State);
 set_request_timeout(#{in_flight := InFlight} = State) ->
     {_, {_, RespDeadline, _}} = lists:last(InFlight),
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
@@ -778,8 +784,7 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
 -spec set_keepalive_timeout(state(), peer_role()) -> state().
 set_keepalive_timeout(#{keepalive_timeout := Timeout} = State, _) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
-    State1 = maps:remove(reponse_time, State),
-    State1#{keepalive_time => current_time() + Timeout}.
+    State#{keepalive_time => current_time() + Timeout}.
 
 -spec unset_keepalive_timeout(state(), peer_role()) -> state().
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
