@@ -426,6 +426,7 @@ in_flight_limit_cooldown(EventType, EventContent, State) ->
 
 -spec terminate(term(), statename(), state()) -> any().
 terminate(Why, StateName, State0) ->
+    ?LOG_DEBUG("Terminating, reason:~p, state:~p, statedata:~p", [Why, StateName, State0]),
     State = case erase(shutdown_state) of
                 undefined -> State0;
                 St -> St
