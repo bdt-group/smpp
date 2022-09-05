@@ -270,6 +270,7 @@ init({Ref, Transport, State}) ->
                 {ok, {_, Port}} ->
                     State1 = State#{port => Port,
                                     socket => Socket,
+                                    max_await_reqs => undefined,
                                     transport => Transport},
                     sock_activate(State1),
                     {_, StateName, State2, Timeout} = bind(State1),
