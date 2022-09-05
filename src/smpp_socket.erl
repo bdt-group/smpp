@@ -337,7 +337,7 @@ bound(info, {tcp_closed, Sock}, #{socket := Sock} = State) ->
     reconnect(closed, ?FUNCTION_NAME, State);
 bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
-bound(timeout, keepalive, #{role := esme} = State) ->
+bound(timeout, keepalive, State) ->
     State1 = send_req(State, #enquire_link{}),
     keep_state(State1);
 bound(timeout, _, State) ->
@@ -654,8 +654,7 @@ send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
             ok
     end,
     send_pkt(State1, ?ESME_ROK, Seq, Body),
-    State2 = unset_keepalive_timeout(State1, esme),
-    set_request_timeout(State2).
+    set_request_timeout(State1).
 
 -spec send_resp(state(), valid_pdu(), pdu()) -> state().
 send_resp(State, Body, Req) ->
@@ -777,13 +776,6 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
 set_keepalive_timeout(#{keepalive_timeout := Timeout} = State, _) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     State#{keepalive_time => current_time() + Timeout}.
-
--spec unset_keepalive_timeout(state(), peer_role()) -> state().
-unset_keepalive_timeout(#{role := Role} = State, Role) ->
-    ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(keepalive_time, State);
-unset_keepalive_timeout(State, _) ->
-    State.
 
 %%%-------------------------------------------------------------------
 %%% Socket management
