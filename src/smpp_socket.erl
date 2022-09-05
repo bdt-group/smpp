@@ -339,7 +339,7 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 bound(timeout, keepalive, State) ->
     State1 = send_req(State, #enquire_link{}),
-    keep_state(State1, []);
+    keep_state(State1);
 bound(timeout, TimeoutType, State) ->
     ?LOG_DEBUG("Timeout type:~p", [TimeoutType]),
     reconnect(timeout, ?FUNCTION_NAME, State);
@@ -352,7 +352,7 @@ bound(cast, {send_req, Body, Sender, undefined}, State) ->
         {ok, State1} ->
             ok = dequeue_reg(State),
             State2 = send_req(State1, Body, Sender, undefined),
-            keep_state(State2, []);
+            keep_state(State2);
         {error, {NextState, State1, Actions}} ->
             next_state(NextState, State1, Actions)
     end;
@@ -476,7 +476,7 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                         end,
             State2 = case State1 of
                 #{in_flight := []} -> set_keepalive_timeout(maps:without([response_time], State1), esme);
-                #{in_flignt := _} -> set_keepalive_timeout(set_request_timeout(State1), esme)
+                #{in_flignt := _} -> unset_keepalive_timeout(set_request_timeout(State1), esme)
             end,
             {ok, NextState, State2};
         false ->
