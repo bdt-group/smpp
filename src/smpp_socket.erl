@@ -340,7 +340,8 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
 bound(timeout, keepalive, State) ->
     State1 = send_req(State, #enquire_link{}),
     keep_state(State1, []);
-bound(timeout, _, State) ->
+bound(timeout, TimeoutType, State) ->
+    ?LOG_DEBUG("Timeout type:~p", [TimeoutType]),
     reconnect(timeout, ?FUNCTION_NAME, State);
 bound({call, From}, {send_req, Body, Time}, State) ->
     % send request operation is the same for call and cast methods,
