@@ -477,7 +477,7 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                         end,
             State2 = case State1 of
                 #{in_flight := []} -> maps:without([response_time], State1);
-                #{in_flignt := _} -> set_request_timeout(State1)
+                #{in_flight := _} -> set_request_timeout(State1)
             end,
             {ok, NextState, State2};
         false ->
