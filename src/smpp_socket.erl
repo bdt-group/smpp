@@ -778,14 +778,13 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
 -spec set_keepalive_timeout(state(), peer_role()) -> state().
 set_keepalive_timeout(#{keepalive_timeout := Timeout} = State, _) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
-    State#{keepalive_time => current_time() + Timeout}.
+    State1 = maps:remove(reponse_time, State),
+    State1#{keepalive_time => current_time() + Timeout}.
 
 -spec unset_keepalive_timeout(state(), peer_role()) -> state().
 unset_keepalive_timeout(#{role := Role} = State, Role) ->
     ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(keepalive_time, State);
-unset_keepalive_timeout(State, _) ->
-    State.
+    maps:remove(response_time, State).
 
 %%%-------------------------------------------------------------------
 %%% Socket management
