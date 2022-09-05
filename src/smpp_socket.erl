@@ -655,7 +655,7 @@ send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
     end,
     send_pkt(State1, ?ESME_ROK, Seq, Body),
     State2 = unset_keepalive_timeout(State1, esme),
-    set_request_timeout(State1).
+    set_request_timeout(State2).
 
 -spec send_resp(state(), valid_pdu(), pdu()) -> state().
 send_resp(State, Body, Req) ->
