@@ -482,7 +482,8 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
     end;
 handle_pkt(#pdu{command_id = CmdID} = Pkt, StateName, State) when ?is_response(CmdID) ->
     report_unexpected_response(Pkt, StateName, State),
-    {ok, StateName, State};
+    State1 = set_keepalive_timeout(State, smsc),
+    {ok, StateName, State1};
 handle_pkt(Pkt, binding, State) ->
     case handle_bind_req(Pkt, State) of
         {ok, bound, State1} ->
