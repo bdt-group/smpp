@@ -362,7 +362,7 @@ bound(cast, {send_req, Body, Sender, Time}, State) ->
         true ->
             ok = dequeue_reg(State),
             State1 = reply(State, {error, sending_expired}, current_time(), Sender),
-            keep_state(State1, []);
+            keep_state(State1);
         false ->
             case check_limits(State) of
                 {ok, State1} ->
@@ -377,7 +377,7 @@ bound(cast, stop, State) ->
     {stop, normal, State};
 bound(EventType, Msg, State) ->
     State1 = callback(handle_event, EventType, Msg, ?FUNCTION_NAME, State),
-    keep_state(State1, []).
+    keep_state(State1).
 
 -spec rate_limit_cooldown(gen_statem:event_type(), term(), state()) ->
           gen_statem:event_handler_result(statename()).
@@ -475,15 +475,11 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                             rate_limit_cooldown -> StateName;
                             _ -> bound
                         end,
-            State2 = case State1 of
-                #{in_flight := []} -> maps:without([response_time], State1);
-                #{in_flight := _} -> set_request_timeout(State1)
-            end,
+            State2 = set_request_timeout(State1),
             {ok, NextState, State2};
         false ->
             report_unexpected_response(Pkt, StateName, State),
-            State2 = set_keepalive_timeout(State, esme),
-            {ok, StateName, State2}
+            {ok, StateName, State}
     end;
 handle_pkt(#pdu{command_id = CmdID} = Pkt, StateName, State) when ?is_response(CmdID) ->
     report_unexpected_response(Pkt, StateName, State),
@@ -774,6 +770,9 @@ bind_timeout(#{bind_timeout := Timeout}) ->
     {state_timeout, Timeout, reconnect}.
 
 -spec set_request_timeout(state()) -> state().
+set_request_timeout(#{in_flight := []} = State) ->
+    ?LOG_DEBUG("No requests, stop request timeout"),
+    maps:without([response_time], State);
 set_request_timeout(#{in_flight := InFlight} = State) ->
     {_, {_, RespDeadline, _}} = lists:last(InFlight),
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
@@ -783,14 +782,8 @@ set_request_timeout(#{in_flight := InFlight} = State) ->
 set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Role) ->
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     State#{keepalive_time => current_time() + Timeout};
-set_keepalive_timeout(State, Role) ->
-    ?LOG_DEBUG("Role mismatch, state:~p role: ~p", [State, Role]),
+set_keepalive_timeout(State, _) ->
     State.
-
--spec unset_keepalive_timeout(state(), peer_role()) -> state().
-unset_keepalive_timeout(#{role := Role} = State, Role) ->
-    ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(keepalive_time, State).
 
 %%%-------------------------------------------------------------------
 %%% Socket management
