@@ -338,7 +338,7 @@ bound(info, {tcp_closed, Sock}, #{socket := Sock} = State) ->
     reconnect(closed, ?FUNCTION_NAME, State);
 bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
-bound(timeout, keepalive, State) ->
+bound(timeout, keepalive, #{role := esme} = State) ->
     State1 = send_req(State, #enquire_link{}),
     keep_state(State1);
 bound(timeout, _, State) ->
