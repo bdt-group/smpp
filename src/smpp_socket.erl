@@ -270,6 +270,7 @@ init({Ref, Transport, State}) ->
                 {ok, {_, Port}} ->
                     State1 = State#{port => Port,
                                     socket => Socket,
+                                    max_await_reqs => undefined,
                                     transport => Transport},
                     sock_activate(State1),
                     {_, StateName, State2, Timeout} = bind(State1),
@@ -425,6 +426,7 @@ in_flight_limit_cooldown(EventType, EventContent, State) ->
 
 -spec terminate(term(), statename(), state()) -> any().
 terminate(Why, StateName, State0) ->
+    ?LOG_DEBUG("Terminating, reason:~p, state:~p, statedata:~p", [Why, StateName, State0]),
     State = case erase(shutdown_state) of
                 undefined -> State0;
                 St -> St
@@ -457,7 +459,8 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
         {value, _, InFlight1} when StateName == binding ->
             case handle_bind_resp(Pkt, State#{in_flight => InFlight1}) of
                 {ok, bound, State1} ->
-                    {ok, bound, State1};
+                    State2 = set_keepalive_timeout(State1, esme),
+                    {ok, bound, State2};
                 Other ->
                     Other
             end;
@@ -471,7 +474,9 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                             rate_limit_cooldown -> StateName;
                             _ -> bound
                         end,
-            {ok, NextState, State1};
+            State2 = set_request_timeout(State1),
+            State3 = set_keepalive_timeout(State2, smsc),
+            {ok, NextState, State3};
         false ->
             report_unexpected_response(Pkt, StateName, State),
             {ok, StateName, State}
@@ -651,7 +656,7 @@ send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
             ok
     end,
     send_pkt(State1, ?ESME_ROK, Seq, Body),
-    State2 = unset_keepalive_timeout(State1, esme),
+    State2 = set_keepalive_timeout(State1, esme),
     set_request_timeout(State2).
 
 -spec send_resp(state(), valid_pdu(), pdu()) -> state().
@@ -765,6 +770,9 @@ bind_timeout(#{bind_timeout := Timeout}) ->
     {state_timeout, Timeout, reconnect}.
 
 -spec set_request_timeout(state()) -> state().
+set_request_timeout(#{in_flight := []} = State) ->
+    ?LOG_DEBUG("No requests, stop request timeout"),
+    maps:without([response_time], State);
 set_request_timeout(#{in_flight := InFlight} = State) ->
     {_, {_, RespDeadline, _}} = lists:last(InFlight),
     ?LOG_DEBUG("Setting request timeout to ~.3fs", [(RespDeadline - current_time())/1000]),
@@ -775,13 +783,6 @@ set_keepalive_timeout(#{keepalive_timeout := Timeout, role := Role} = State, Rol
     ?LOG_DEBUG("Setting keepalive timeout to ~.3fs", [Timeout/1000]),
     State#{keepalive_time => current_time() + Timeout};
 set_keepalive_timeout(State, _) ->
-    State.
-
--spec unset_keepalive_timeout(state(), peer_role()) -> state().
-unset_keepalive_timeout(#{role := Role} = State, Role) ->
-    ?LOG_DEBUG("Unsetting keepalive timeout"),
-    maps:remove(keepalive_time, State);
-unset_keepalive_timeout(State, _) ->
     State.
 
 %%%-------------------------------------------------------------------
