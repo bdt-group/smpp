@@ -1,7 +1,7 @@
 REBAR ?= rebar3
 PROJECT := smpp
 
-.PHONY: compile clean distclean xref dialyzer dialyze linter lint
+.PHONY: compile clean distclean xref dialyzer dialyze linter lint test
 
 all: compile
 
@@ -28,3 +28,6 @@ linter:
 
 lint:
 	@$(REBAR) as lint lint
+
+test:
+	@$(REBAR) do eunit, ct

@@ -140,7 +140,7 @@ wait_for_events(T) ->
 wait_for_events(Acc, T) ->
     receive
         X ->
-            [X | Acc]
+            wait_for_events([X | Acc], T)
     after
         T ->
             lists:reverse(Acc)
