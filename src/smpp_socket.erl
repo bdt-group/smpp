@@ -575,7 +575,7 @@ handle_bind_resp(#pdu{command_status = Status}, State) ->
 -spec handle_bind_req(pdu(), state()) -> {ok, statename(), state()} |
                                          {error, error_reason(), state()}.
 handle_bind_req(#pdu{body = Bind} = Pkt,
-            #{role := smsc} = State) ->
+                #{role := smsc} = State) ->
     {Status, BindResp, State1} = callback(handle_bind, Bind, State),
     State2 = send_resp(State1, BindResp, Pkt, Status),
     process_result(State2, Status);
@@ -908,35 +908,29 @@ default_callback(handle_event, EventType, Msg, StateName, State) ->
 default_response(#deliver_sm{}) -> #deliver_sm_resp{};
 default_response(#submit_sm{}) -> #submit_sm_resp{}.
 
-
--spec default_bind(pdu(), state()) ->
+-spec default_bind(bind_receiver() | bind_transmitter() | bind_transceiver() | _,
+                   state()) ->
     {pos_integer(),
         bind_receiver_resp() |
         bind_transceiver_resp() |
         bind_transmitter_resp() |
         generic_nack(), state()}.
-default_bind(#pdu{body = #bind_transceiver{
-                               system_id = SysId,
-                               interface_version = Ver}},
+default_bind(#bind_transceiver{system_id = SysId, interface_version = Ver},
             #{role := smsc} = State) ->
     BindResp = #bind_transceiver_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
-    State1 = State#{system_id => SysId, mode => transmitter},
+    State1 = State#{system_id => SysId, mode => transceiver},
     {?ESME_ROK, BindResp, State1};
-default_bind(#pdu{body = #bind_receiver{
-                               system_id = SysId,
-                               interface_version = Ver}},
-            #{role := smsc} = State) ->
+default_bind(#bind_receiver{system_id = SysId, interface_version = Ver},
+             #{role := smsc} = State) ->
     BindResp = #bind_receiver_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
     State1 = State#{system_id => SysId, mode => transmitter},
     {?ESME_ROK, BindResp, State1};
-default_bind(#pdu{body = #bind_transmitter{
-                               system_id = SysId,
-                               interface_version = Ver}},
-            #{role := smsc} = State) ->
+default_bind(#bind_transmitter{system_id = SysId, interface_version = Ver},
+             #{role := smsc} = State) ->
     BindResp = #bind_transmitter_resp{
                   system_id = SysId,
                   sc_interface_version = Ver},
@@ -1050,6 +1044,8 @@ init_rate_limit(#{req_per_sec := Rps, id := Id} = State) when is_integer(Rps) ->
 -spec check_limits(state()) ->
           {ok, state()} |
           {error, {statename(), state(), [gen_statem:action()]}}.
+check_limits(#{role := smsc} = State) ->
+    {ok, State};
 check_limits(#{req_per_sec := undefined} = State) ->
     check_in_flight(State);
 check_limits(#{req_per_sec := MaxRps, current_rps := {CurSecond, CurRate}} = State) ->
