@@ -138,6 +138,7 @@ opts_to_state(Mod, Opts) ->
     IP = maps:get(ip, Opts, ?DEFAULT_IP),
     RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
+    ResponseTimeout = maps:get(response_timeout, Opts, KeepAliveTimeout),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     IsProxy = maps:get(proxy, Opts, false),
     RanchOpts = [{ip, IP}, {port, Port}],
@@ -145,7 +146,8 @@ opts_to_state(Mod, Opts) ->
                   reconnect => false,
                   proxy => IsProxy,
                   bind_timeout => BindTimeout,
-                  keepalive_timeout => KeepAliveTimeout},
+                  keepalive_timeout => KeepAliveTimeout,
+                  response_timeout => ResponseTimeout},
     case Mod of
         undefined ->
             {State, RanchOpts};

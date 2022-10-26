@@ -160,6 +160,7 @@ opts_to_state(Mod, Opts) ->
     ConnectTimeout = maps:get(connect_timeout, Opts, ?CONNECT_TIMEOUT),
     ReconnectTimeout = maps:get(reconnect_timeout, Opts, ?RECONNECT_TIMEOUT),
     KeepAliveTimeout = maps:get(keepalive_timeout, Opts, ?KEEPALIVE_TIMEOUT),
+    ResponseTimeout = maps:get(response_timeout, Opts, KeepAliveTimeout),
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     ReqPerSec = maps:get(req_per_sec, Opts, undefined),
     MaxAwaitReqs = maps:get(max_await_reqs, Opts, undefined),
@@ -177,7 +178,8 @@ opts_to_state(Mod, Opts) ->
                   bind_timeout => BindTimeout,
                   req_per_sec => ReqPerSec,
                   max_await_reqs => MaxAwaitReqs,
-                  keepalive_timeout => KeepAliveTimeout},
+                  keepalive_timeout => KeepAliveTimeout,
+                  response_timeout => ResponseTimeout},
     case Mod of
         undefined ->
             State;
