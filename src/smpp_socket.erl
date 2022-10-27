@@ -68,8 +68,9 @@
                    bind_timeout => millisecs(),
                    connect_timeout => millisecs(),
                    reconnect_timeout => millisecs(),
-                   keepalive_timeout => millisecs(),
+                   keepalive_timeout := millisecs(),
                    keepalive_time => millisecs(),
+                   response_timeout := millisecs(),
                    response_time => millisecs(),
                    buf => binary(),
                    seq => 1..16#7FFFFFFF,
@@ -464,12 +465,12 @@ handle_pkt(#pdu{command_id = CmdID, sequence_number = Seq} = Pkt,
                 Other ->
                     Other
             end;
-        {value, {Seq, {Time, _, Sender}}, InFlight1}
+        {value, {Seq, {ReqDeadline, _, Sender}}, InFlight1}
           when StateName == bound;
                StateName == in_flight_limit_cooldown;
                StateName == rate_limit_cooldown ->
             State1 = reply(State#{in_flight => InFlight1},
-                           {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, Time, Sender),
+                           {ok, {Pkt#pdu.command_status, Pkt#pdu.body}}, ReqDeadline, Sender),
             NextState = case StateName of
                             rate_limit_cooldown -> StateName;
                             _ -> bound
@@ -533,12 +534,12 @@ handle_request(Pkt, StateName, State) ->
 -spec reply(state(), send_reply() | {error, stale}, millisecs(), sender()) -> state().
 reply(State, _, _, undefined) ->
     State;
-reply(State, Resp, Time, Sender) ->
+reply(State, Resp, ReqDeadline, Sender) ->
     Now = current_time(),
     case Sender of
         Fun when is_function(Fun) ->
             Fun(Resp, State);
-        From when Now < Time ->
+        From when Now < ReqDeadline ->
             gen_statem:reply(From, Resp),
             State;
         _ ->
@@ -642,12 +643,12 @@ send_req(State, Body) ->
 
 -spec send_req(state(), valid_pdu(), sender(), undefined | millisecs()) -> state().
 send_req(State, Body, Sender, undefined) ->
-    Timeout = maps:get(keepalive_timeout, State),
+    Timeout = maps:get(response_timeout, State),
     send_req(State, Body, Sender, current_time() + Timeout);
-send_req(#{in_flight := InFlight} = State, Body, Sender, Time) ->
+send_req(#{in_flight := InFlight} = State, Body, Sender, ReqDeadline) ->
     Seq = (maps:get(seq, State, 0) rem 16#7FFFFFFF) + 1,
-    RespDeadline = current_time() + maps:get(keepalive_timeout, State),
-    State1 = State#{seq => Seq, in_flight => [{Seq, {Time, RespDeadline, Sender}} | InFlight]},
+    RespDeadline = current_time() + maps:get(response_timeout, State),
+    State1 = State#{seq => Seq, in_flight => [{Seq, {ReqDeadline, RespDeadline, Sender}} | InFlight]},
     case Body of
         #submit_sm{} ->
             _ = callback(handle_sending, Body, State),
@@ -677,8 +678,8 @@ send_pkt(State, Status, Seq, Body) ->
 
 -spec discard_in_flight_requests(error_reason(), state()) -> state().
 discard_in_flight_requests(Reason, #{in_flight := InFlight} = State) ->
-    lists:foldr(fun({_Seq, {Time, _, Sender}}, State1) ->
-                        reply(State1, {error, Reason}, Time, Sender)
+    lists:foldr(fun({_Seq, {ReqDeadline, _, Sender}}, State1) ->
+                        reply(State1, {error, Reason}, ReqDeadline, Sender)
                 end, State#{in_flight => []}, InFlight).
 
 %%%-------------------------------------------------------------------
