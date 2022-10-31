@@ -78,12 +78,12 @@
 %%%===================================================================
 -spec child_spec(term(), module() | undefined, map()) -> supervisor:child_spec().
 child_spec(Id, Mod, Opts) ->
-    {State, RanchOpts} = opts_to_state(Mod, Opts),
+    {State, RanchOpts} = opts_to_state(Mod, Opts, Id),
     smpp_socket:child_spec(smsc, Id, State, RanchOpts).
 
 -spec start(term(), module() | undefined, map()) -> {ok, pid()} | {error, term()}.
 start(Id, Mod, Opts) ->
-    {State, RanchOpts} = opts_to_state(Mod, Opts),
+    {State, RanchOpts} = opts_to_state(Mod, Opts, Id),
     smpp_socket:listen(Id, State, RanchOpts).
 
 -spec stop(gen_statem:server_ref() | state()) -> any().
@@ -132,8 +132,8 @@ pp(Term) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
--spec opts_to_state(module() | undefined, map()) -> {state(), ranch_tcp:opts()}.
-opts_to_state(Mod, Opts) ->
+-spec opts_to_state(module() | undefined, map(), term()) -> {state(), ranch_tcp:opts()}.
+opts_to_state(Mod, Opts, Id) ->
     Port = maps:get(port, Opts, ?DEFAULT_PORT),
     IP = maps:get(ip, Opts, ?DEFAULT_IP),
     RQLimit = maps:get(request_queue_limit, Opts, ?REQUEST_QUEUE_LIMIT),
@@ -142,7 +142,8 @@ opts_to_state(Mod, Opts) ->
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     IsProxy = maps:get(proxy, Opts, false),
     RanchOpts = [{ip, IP}, {port, Port}],
-    State = Opts#{rq_limit => RQLimit,
+    State = Opts#{id => Id,
+                  rq_limit => RQLimit,
                   reconnect => false,
                   proxy => IsProxy,
                   bind_timeout => BindTimeout,

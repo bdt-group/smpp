@@ -80,30 +80,30 @@
 -spec child_spec(socket_name(), module() | undefined, map()) ->
                         supervisor:child_spec().
 child_spec(Name, Mod, Opts) ->
-    State = opts_to_state(Mod, Opts),
+    State = opts_to_state(Mod, Opts, Name),
     smpp_socket:child_spec(esme, smpp_socket:get_id_by_name(Name), State, Name).
 
 -spec start(module() | undefined, map()) -> {ok, pid()} | {error, term()}.
-start(Mod, Opts) ->
+start(Mod, Opts = #{id := _}) ->
     smpp_socket:connect(opts_to_state(Mod, Opts)).
 
 -spec start(socket_name(), module() | undefined, map()) ->
                    {ok, pid()} | {error, term()}.
 start(Name, Mod, Opts) ->
-    smpp_socket:connect(Name, opts_to_state(Mod, Opts)).
+    smpp_socket:connect(Name, opts_to_state(Mod, Opts, Name)).
 
 -spec stop(gen_statem:server_ref() | state()) -> any().
 stop(Ref) ->
     smpp_socket:stop(Ref).
 
 -spec start_link(module() | undefined, map()) -> {ok, pid()} | {error, term()}.
-start_link(Mod, Opts) ->
+start_link(Mod, Opts = #{id := _}) ->
     smpp_socket:connect_link(opts_to_state(Mod, Opts)).
 
 -spec start_link(socket_name(), module() | undefined, map()) ->
                         {ok, pid()} | {error, term()}.
 start_link(Name, Mod, Opts) ->
-    smpp_socket:connect_link(Name, opts_to_state(Mod, Opts)).
+    smpp_socket:connect_link(Name, opts_to_state(Mod, Opts, Name)).
 
 -spec send(gen_statem:server_ref(), valid_pdu(), pos_integer()) -> send_reply().
 send(Ref, Pkt, Timeout) ->
@@ -147,6 +147,9 @@ pp(Term) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+opts_to_state(Mod, Opts, Name) ->
+    opts_to_state(Mod, Opts#{id => smpp_socket:get_id_by_name(Name)}).
+
 opts_to_state(Mod, Opts) ->
     Host = maps:get(host, Opts, "localhost"),
     Port = maps:get(port, Opts, ?DEFAULT_PORT),
