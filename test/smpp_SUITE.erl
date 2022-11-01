@@ -82,11 +82,9 @@ connection_repair(_Config) ->
 
 flow_control_req_per_sec(_Config) ->
     {ok, _} = echo_smsc:start(?SMSC_REF, #{}),
-    {global, Id} = ?ESME_REF,
     {ok, _} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
                                              req_per_sec => 1,
-                                             max_await_reqs => 1,
-                                             id => Id}),
+                                             max_await_reqs => 1}),
     SrcAddr = "1234",
     DestAddr = "88005553535",
     ShortMessage = "test case 1",
