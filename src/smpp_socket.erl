@@ -48,6 +48,7 @@
 -define(is_request(CmdID), ((CmdID band 16#80000000) == 0)).
 -define(is_response(CmdID), ((CmdID band 16#80000000) /= 0)).
 -define(is_receiver(Mode), (Mode == receiver orelse Mode == transceiver)).
+-define(is_transmitter(Mode), (Mode == transmitter orelse Mode == transceiver)).
 
 -type state() :: #{vsn := non_neg_integer(),
                    id := term(),
@@ -522,7 +523,7 @@ handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt, _,
     {ok, State2};
 handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
                #{role := Role, mode := Mode, proxy := Proxy} = State)
-  when ?is_receiver(Mode) andalso (Role == smsc orelse Proxy == true) ->
+  when ?is_transmitter(Mode) andalso (Role == smsc orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_submit, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
