@@ -38,7 +38,7 @@ echo_smsc(_Config) ->
     DestAddr = "88005553535",
     ShortMessage = "test case 1",
     SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
-                          short_message = ShortMessage},
+                          short_message = ShortMessage, vendor_specific = #{16#3fff => <<1,2>>}},
     {ok, _MessageId} = gen_esme:send(?ESME_REF, SubmitSm, timer:seconds(5)),
     [#deliver_sm{source_addr = DestAddr, destination_addr = SrcAddr,
                  short_message = ShortMessage}] =
