@@ -65,6 +65,8 @@
                    host => string(),
                    port => inet:port_number(),
                    system_id => string(),
+                   system_type => string(),
+                   interface_version => non_neg_integer(),
                    password => string(),
                    bind_timeout => millisecs(),
                    connect_timeout => millisecs(),
@@ -552,19 +554,26 @@ reply(State, Resp, ReqDeadline, Sender) ->
 %%%-------------------------------------------------------------------
 -spec send_bind_req(state()) -> state().
 send_bind_req(#{role := esme, mode := Mode,
-                system_id := SystemId, password := Password} = State) ->
+                system_id := SystemId, system_type := SystemType,
+                interface_version := InterfaceVersion, password := Password} = State) ->
     BindReq = case Mode of
                   transceiver ->
                       #bind_transceiver{
                          system_id = SystemId,
+                         system_type = SystemType,
+                         interface_version = InterfaceVersion,
                          password = Password};
                   receiver ->
                       #bind_receiver{
                          system_id = SystemId,
+                         system_type = SystemType,
+                         interface_version = InterfaceVersion,
                          password = Password};
                   transmitter ->
                       #bind_transmitter{
                          system_id = SystemId,
+                         system_type = SystemType,
+                         interface_version = InterfaceVersion,
                          password = Password}
               end,
     send_req(State, BindReq).
