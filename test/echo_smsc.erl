@@ -4,7 +4,7 @@
 
 -behaviour(gen_smsc).
 
--export([start/2, stop/1, handle_submit/2]).
+-export([start/2, stop/1, handle_submit/2, handle_cancel/2]).
 
 %%%===================================================================
 %%% API
@@ -18,6 +18,9 @@ stop(Ref) ->
 handle_submit(SubmitSm, State) ->
     ok = gen_smsc:send_async(self(), echo_submit_sm(SubmitSm)),
     {?ESME_ROK, State}.
+
+handle_cancel(_Cancel, State) ->
+    {?ESME_ROK, #cancel_sm_resp{}, State}.
 
 %%%===================================================================
 %%% Internal functions

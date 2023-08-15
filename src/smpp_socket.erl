@@ -529,6 +529,12 @@ handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
     {Status, Resp, State1} = callback(handle_submit, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
+handle_request(#pdu{body = #cancel_sm{} = Body} = Pkt, _,
+               #{role := Role, mode := Mode, proxy := Proxy} = State)
+  when ?is_transmitter(Mode) andalso (Role == smsc orelse Proxy == true) ->
+    {Status, Resp, State1} = callback(handle_cancel, Body, State),
+    State2 = send_resp(State1, Resp, Pkt, Status),
+    {ok, State2};
 handle_request(Pkt, StateName, State) ->
     report_unexpected_pkt(Pkt, StateName, State),
     State1 = send_resp(State, #generic_nack{}, Pkt, ?ESME_RINVCMDID),
