@@ -61,9 +61,6 @@
 -callback handle_submit(submit_sm(), state()) -> {non_neg_integer(), state()} |
                                                  {non_neg_integer(), submit_sm_resp(), state()} |
                                                  ignore.
--callback handle_cancel(cancel_sm(), state()) -> {non_neg_integer(), state()} |
-                                                 {non_neg_integer(), submit_sm_resp(), state()} |
-                                                 ignore.
 -callback handle_stop(term(), statename(), state()) -> any().
 -callback handle_event(event_type(), term(), statename(), state()) -> state() | ignore.
 
@@ -74,7 +71,6 @@
                      handle_sending/2,
                      handle_deliver/2,
                      handle_submit/2,
-                     handle_cancel/2,
                      handle_event/4,
                      handle_stop/3]).
 

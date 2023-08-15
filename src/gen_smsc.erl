@@ -61,7 +61,7 @@
                                                  {non_neg_integer(), submit_sm_resp(), state()} |
                                                  ignore.
 -callback handle_cancel(cancel_sm(), state()) -> {non_neg_integer(), state()} |
-                                                 {non_neg_integer(), submit_sm_resp(), state()} |
+                                                 {non_neg_integer(), cancel_sm_resp(), state()} |
                                                  ignore.
 -callback handle_stop(term(), statename(), state()) -> any().
 -callback handle_event(event_type(), term(), statename(), state()) -> state() | ignore.
