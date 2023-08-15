@@ -530,7 +530,7 @@ handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
 handle_request(#pdu{body = #cancel_sm{} = Body} = Pkt, _,
-               #{rold := Role, mode := Mode, proxy := Proxy} = State)
+               #{role := Role, mode := Mode, proxy := Proxy} = State)
   when ?is_transmitter(Mode) andalso (Role == smsc orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_cancel, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),

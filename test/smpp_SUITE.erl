@@ -43,6 +43,9 @@ echo_smsc(_Config) ->
     [#deliver_sm{source_addr = DestAddr, destination_addr = SrcAddr,
                  short_message = ShortMessage}] =
         wait_for_events(timer:seconds(1)),
+    CancelSm = #cancel_sm{message_id = "5462162233988800242",
+                          source_addr = SrcAddr, destination_addr = DestAddr},
+    {ok, {?ESME_ROK, #cancel_sm_resp{}}} = gen_esme:send(?ESME_REF, CancelSm, timer:seconds(5)),
     ranch:stop_listener(?SMSC_REF).
 
 rejecting_smsc(_Config) ->
