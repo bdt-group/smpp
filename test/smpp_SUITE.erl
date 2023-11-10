@@ -32,20 +32,29 @@ end_per_suite(_Config) ->
 %%% test cases
 %%%===================================================================
 echo_smsc(_Config) ->
+    true = erlang:function_exported(test_esme_1, handle_data, 2),
     {ok, _} = echo_smsc:start(?SMSC_REF, #{}),
     {ok, _} = test_esme_1:start(?ESME_REF, #{subscriber => self()}),
     SrcAddr = "1234",
     DestAddr = "88005553535",
     ShortMessage = "test case 1",
+    MessagePayload = list_to_binary(ShortMessage),
     SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
                           short_message = ShortMessage, vendor_specific = #{16#3fff => <<1,2>>}},
     {ok, _MessageId} = gen_esme:send(?ESME_REF, SubmitSm, timer:seconds(5)),
     [#deliver_sm{source_addr = DestAddr, destination_addr = SrcAddr,
                  short_message = ShortMessage}] =
         wait_for_events(timer:seconds(1)),
+
     CancelSm = #cancel_sm{message_id = "5462162233988800242",
                           source_addr = SrcAddr, destination_addr = DestAddr},
     {ok, {?ESME_ROK, #cancel_sm_resp{}}} = gen_esme:send(?ESME_REF, CancelSm, timer:seconds(5)),
+
+    DataSm = #data_sm{source_addr = SrcAddr, destination_addr = DestAddr, message_payload = MessagePayload},
+    {ok, {?ESME_ROK, #data_sm_resp{}}} = gen_esme:send(?ESME_REF, DataSm, timer:seconds(2)),
+    [#data_sm{source_addr = DestAddr, destination_addr = SrcAddr,
+              message_payload = MessagePayload}] =
+        wait_for_events(timer:seconds(1)),
     ranch:stop_listener(?SMSC_REF).
 
 rejecting_smsc(_Config) ->

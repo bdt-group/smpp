@@ -212,7 +212,8 @@ send(Ref, Pkt, Timeout) ->
             try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
             catch exit:{timeout, {gen_statem, call, _}} ->
                     {error, timeout};
-                  exit:{_, {gen_statem, call, _}} ->
+                  exit:{_, {gen_statem, call, _}} = Err ->
+                    ct:pal("~p", [Err]),
                     {error, closed}
             end;
         error ->
@@ -521,6 +522,10 @@ handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt, _,
                #{role := Role, mode := Mode, proxy := Proxy} = State)
   when ?is_receiver(Mode) andalso (Role == esme orelse Proxy == true) ->
     {Status, Resp, State1} = callback(handle_deliver, Body, State),
+    State2 = send_resp(State1, Resp, Pkt, Status),
+    {ok, State2};
+handle_request(#pdu{body = #data_sm{} = Body} = Pkt, _, State) -> %% data_sm is available for both roles
+    {Status, Resp, State1} = callback(handle_data, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
 handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
@@ -857,6 +862,7 @@ callback(Fun, State) ->
 
 -spec callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), valid_pdu(), state()}.
 callback(Fun, Body, #{callback := Mod} = State) ->
+    ct:pal("Exp: ~p ~p ~p", [Mod, Fun, erlang:function_exported(Mod, Fun, 2)]),
     case erlang:function_exported(Mod, Fun, 2) of
         false -> default_callback(Fun, Body, State);
         true ->
@@ -921,9 +927,11 @@ default_callback(handle_event, EventType, Msg, StateName, State) ->
     State.
 
 -spec default_response(deliver_sm()) -> deliver_sm_resp();
-                      (submit_sm()) -> submit_sm_resp().
+                      (submit_sm()) -> submit_sm_resp();
+                      (data_sm()) -> data_sm_resp().
 default_response(#deliver_sm{}) -> #deliver_sm_resp{};
-default_response(#submit_sm{}) -> #submit_sm_resp{}.
+default_response(#submit_sm{}) -> #submit_sm_resp{};
+default_response(#data_sm{}) -> #data_sm_resp{}.
 
 -spec default_bind(bind_receiver() | bind_transmitter() | bind_transceiver() | _,
                    state()) ->
