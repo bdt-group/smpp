@@ -212,8 +212,7 @@ send(Ref, Pkt, Timeout) ->
             try gen_statem:call(Ref, {send_req, Pkt, Time}, {dirty_timeout, Timeout})
             catch exit:{timeout, {gen_statem, call, _}} ->
                     {error, timeout};
-                  exit:{_, {gen_statem, call, _}} = Err ->
-                    ct:pal("~p", [Err]),
+                  exit:{_, {gen_statem, call, _}} ->
                     {error, closed}
             end;
         error ->
@@ -862,7 +861,6 @@ callback(Fun, State) ->
 
 -spec callback(atom(), valid_pdu(), state()) -> {non_neg_integer(), valid_pdu(), state()}.
 callback(Fun, Body, #{callback := Mod} = State) ->
-    ct:pal("Exp: ~p ~p ~p", [Mod, Fun, erlang:function_exported(Mod, Fun, 2)]),
     case erlang:function_exported(Mod, Fun, 2) of
         false -> default_callback(Fun, Body, State);
         true ->
