@@ -4,7 +4,7 @@
 
 -behaviour(gen_esme).
 
--export([start/2, stop/1, handle_deliver/2]).
+-export([start/2, stop/1, handle_deliver/2, handle_data/2]).
 
 %%%===================================================================
 %%% API
@@ -18,3 +18,8 @@ stop(Ref) ->
 handle_deliver(DeliverSm, State = #{subscriber := Pid}) ->
     Pid ! DeliverSm,
     {?ESME_ROK, State}.
+
+handle_data(DataSm, State = #{subscriber := Pid}) ->
+    ct:pal("rec data_sm: ~p", [DataSm]),
+    Pid ! DataSm,
+    {?ESME_ROK, #data_sm_resp{}, State}.

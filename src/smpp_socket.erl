@@ -523,6 +523,10 @@ handle_request(#pdu{body = #deliver_sm{} = Body} = Pkt, _,
     {Status, Resp, State1} = callback(handle_deliver, Body, State),
     State2 = send_resp(State1, Resp, Pkt, Status),
     {ok, State2};
+handle_request(#pdu{body = #data_sm{} = Body} = Pkt, _, State) -> %% data_sm is available for both roles
+    {Status, Resp, State1} = callback(handle_data, Body, State),
+    State2 = send_resp(State1, Resp, Pkt, Status),
+    {ok, State2};
 handle_request(#pdu{body = #submit_sm{} = Body} = Pkt, _,
                #{role := Role, mode := Mode, proxy := Proxy} = State)
   when ?is_transmitter(Mode) andalso (Role == smsc orelse Proxy == true) ->
@@ -921,9 +925,11 @@ default_callback(handle_event, EventType, Msg, StateName, State) ->
     State.
 
 -spec default_response(deliver_sm()) -> deliver_sm_resp();
-                      (submit_sm()) -> submit_sm_resp().
+                      (submit_sm()) -> submit_sm_resp();
+                      (data_sm()) -> data_sm_resp().
 default_response(#deliver_sm{}) -> #deliver_sm_resp{};
-default_response(#submit_sm{}) -> #submit_sm_resp{}.
+default_response(#submit_sm{}) -> #submit_sm_resp{};
+default_response(#data_sm{}) -> #data_sm_resp{}.
 
 -spec default_bind(bind_receiver() | bind_transmitter() | bind_transceiver() | _,
                    state()) ->

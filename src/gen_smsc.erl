@@ -60,6 +60,9 @@
 -callback handle_submit(submit_sm(), state()) -> {non_neg_integer(), state()} |
                                                  {non_neg_integer(), submit_sm_resp(), state()} |
                                                  ignore.
+-callback handle_data(data_sm(), state()) -> {non_neg_integer(), state()} |
+                                             {non_neg_integer(), data_sm_resp(), state()} |
+                                             ignore.
 -callback handle_cancel(cancel_sm(), state()) -> {non_neg_integer(), state()} |
                                                  {non_neg_integer(), cancel_sm_resp(), state()} |
                                                  ignore.
