@@ -43,6 +43,7 @@ echo_submit_sm(#submit_sm{source_addr_ton = DestAddrTon,
                 dest_addr_npi = DestAddrNpi,
                 destination_addr = DestAddr,
                 short_message = ShortMessage}.
+
 echo_data_sm(#data_sm{source_addr_ton = DestAddrTon,
                           source_addr_npi = DestAddrNpi,
                           source_addr = DestAddr,
