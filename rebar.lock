@@ -4,5 +4,5 @@
   0},
  {<<"smpp34pdu">>,
   {git,"https://github.com/bdt-group/smpp34pdu.git",
-       {ref,"5587817c256af01259dca09846dfe3e27edc382f"}},
+       {ref,"3baf797eff1ba40dbd21f7631288cbbd884e59f3"}},
   0}].
