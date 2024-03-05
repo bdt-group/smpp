@@ -20,7 +20,7 @@ all() ->
      connection_repair,
      flow_control_req_per_sec,
      flow_control_in_flight,
-     timeout_tolerance].
+     ignore_response_timeout].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(ranch),
@@ -141,11 +141,11 @@ flow_control_in_flight(_Config) ->
     {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 1000),
     ranch:stop_listener(?SMSC_REF).
 
-timeout_tolerance(_Config) ->
+ignore_response_timeout(_Config) ->
     {ok, _} = slow_echo_smsc:start(?SMSC_REF, #{}),
     {global, Id} = ?ESME_REF,
     {ok, EsmePid} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
-                                                   timeout_tolerance => true,
+                                                   ignore_response_timeout => true,
                                                    response_timeout => 600,
                                                    reconnect => false,
                                                    in_flight_limit => 0,

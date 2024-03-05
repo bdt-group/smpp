@@ -80,7 +80,7 @@
                    socket => port(),
                    transport => module(),
                    current_rps => {millisecs(), non_neg_integer()},
-                   timeout_tolerance => boolean(),
+                   ignore_response_timeout => boolean(),
                    _ => term()}.
 
 -type seq() :: non_neg_integer().
@@ -346,7 +346,7 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
 bound(timeout, keepalive, #{role := esme} = State) ->
     State1 = send_req(State, #enquire_link{}),
     keep_state(State1);
-bound(timeout, _, #{timeout_tolerance := true} = State) ->
+bound(timeout, _, #{ignore_response_timeout := true} = State) ->
     State1 = handle_send_timeout(State),
     keep_state(State1);
 bound(timeout, _, State) ->
