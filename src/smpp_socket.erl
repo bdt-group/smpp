@@ -80,6 +80,7 @@
                    socket => port(),
                    transport => module(),
                    current_rps => {millisecs(), non_neg_integer()},
+                   ignore_response_timeout => boolean(),
                    _ => term()}.
 
 -type seq() :: non_neg_integer().
@@ -344,6 +345,9 @@ bound(info, {tcp_error, Sock, Reason}, #{socket := Sock} = State) ->
     reconnect({inet, Reason}, ?FUNCTION_NAME, State);
 bound(timeout, keepalive, #{role := esme} = State) ->
     State1 = send_req(State, #enquire_link{}),
+    keep_state(State1);
+bound(timeout, _, #{ignore_response_timeout := true} = State) ->
+    State1 = handle_send_timeout(State),
     keep_state(State1);
 bound(timeout, _, State) ->
     reconnect(timeout, ?FUNCTION_NAME, State);
@@ -776,6 +780,18 @@ current_time() ->
 init_state(State, Role) ->
     State#{vsn => ?VSN, role => Role,
            in_flight => []}.
+
+-spec handle_send_timeout(state()) -> state().
+handle_send_timeout(#{in_flight := []} = State) ->
+    State;
+handle_send_timeout(#{in_flight := InFlight} = State) ->
+    Now = current_time(),
+    {InFlight1, Timeouted} = lists:splitwith(fun({_, {_, RespDeadline, _}}) ->
+                                                     RespDeadline < Now
+                                             end, InFlight),
+    lists:foldr(fun({_Seq, {ReqDeadline, _, Sender}}, State1) ->
+                        reply(State1, {error, timeout}, ReqDeadline, Sender)
+                end, State#{in_flight => InFlight1}, Timeouted).
 
 %%%-------------------------------------------------------------------
 %%% Timers

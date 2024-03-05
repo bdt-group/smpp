@@ -173,6 +173,7 @@ opts_to_state(Mod, Opts) ->
     BindTimeout = maps:get(bind_timeout, Opts, ?BIND_TIMEOUT),
     ReqPerSec = maps:get(req_per_sec, Opts, undefined),
     MaxAwaitReqs = maps:get(max_await_reqs, Opts, undefined),
+    IgnoreResponseTimeout = maps:get(ignore_response_timeout, Opts, false),
     State = Opts#{host => Host,
                   port => Port,
                   mode => Mode,
@@ -190,7 +191,8 @@ opts_to_state(Mod, Opts) ->
                   req_per_sec => ReqPerSec,
                   max_await_reqs => MaxAwaitReqs,
                   keepalive_timeout => KeepAliveTimeout,
-                  response_timeout => ResponseTimeout},
+                  response_timeout => ResponseTimeout,
+                  ignore_response_timeout => IgnoreResponseTimeout},
     case Mod of
         undefined ->
             State;
