@@ -64,6 +64,8 @@
                    mode => mode(),
                    host => string(),
                    port => inet:port_number(),
+                   peer_addr => inet:ip_address(),
+                   peer_port => port(),
                    system_id => string(),
                    system_type => string(),
                    interface_version => non_neg_integer(),
@@ -277,10 +279,16 @@ init({Ref, Transport, State}) ->
                                     socket => Socket,
                                     max_await_reqs => undefined,
                                     transport => Transport},
-                    sock_activate(State1),
-                    {_, StateName, State2, Timeout} = bind(State1),
-                    State3 = callback(handle_connected, State2),
-                    gen_statem:enter_loop(?MODULE, [], StateName, State3, [Timeout]);
+                    State2 = case Transport:peername(Socket) of
+                        {ok, {PeerAddr, PeerPort}} ->
+                            State1#{peer_addr => PeerAddr, peer_port => PeerPort};
+                        _ ->
+                            State1
+                    end,
+                    sock_activate(State2),
+                    {_, StateName, State3, Timeout} = bind(State2),
+                    State4 = callback(handle_connected, State3),
+                    gen_statem:enter_loop(?MODULE, [], StateName, State4, [Timeout]);
                 {error, _} ->
                     ignore
             end;
