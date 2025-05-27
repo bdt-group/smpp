@@ -56,6 +56,13 @@ echo_smsc(_Config) ->
     [#data_sm{source_addr = DestAddr, destination_addr = SrcAddr,
               message_payload = MessagePayload}] =
         wait_for_events(timer:seconds(1)),
+
+    [SMSCPid] = ranch:procs(?SMSC_REF, connections),
+    SMSCConnState = sys:get_state(SMSCPid),
+
+    ct:pal("SMSCState: ~p", [SMSCConnState]),
+    {bound, #{peer_addr := {127,0,0,1}, peer_port := PeerPort}} = SMSCConnState,
+    true = (PeerPort =/= 2775),
     ranch:stop_listener(?SMSC_REF).
 
 rejecting_smsc(_Config) ->
