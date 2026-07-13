@@ -399,7 +399,7 @@ bound(EventType, Msg, State) ->
 rate_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
     decode(Data, ?FUNCTION_NAME, State);
 rate_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
-    keep_state(State, [{next_event, timeout, keepalive}]);
+    keep_state(State, [postpone]);
 rate_limit_cooldown(state_timeout, rate_limit_reset, State) ->
     next_state(bound, State);
 rate_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
@@ -423,7 +423,7 @@ rate_limit_cooldown(EventType, EventContent, State) ->
 in_flight_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
     decode(Data, ?FUNCTION_NAME, State);
 in_flight_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
-    keep_state(State, [{next_event, timeout, keepalive}]);
+    keep_state(State, [postpone]);
 in_flight_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
     in_flight_limit_cooldown(cast, {send_req, Body, From, Time}, State);
 in_flight_limit_cooldown(cast, {send_req, _Body, _Sender, undefined}, State) ->
