@@ -775,13 +775,13 @@ set_timeouts(#{keepalive_time := KeepAliveTime,
                ResponseTime -> response;
                KeepAliveTime -> keepalive
            end,
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, Type}];
 set_timeouts(#{keepalive_time := Time}) ->
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, keepalive}];
 set_timeouts(#{response_time := Time}) ->
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, response}];
 set_timeouts(_) ->
     [].
