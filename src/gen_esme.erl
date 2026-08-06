@@ -174,6 +174,7 @@ opts_to_state(Mod, Opts) ->
     ReqPerSec = maps:get(req_per_sec, Opts, undefined),
     MaxAwaitReqs = maps:get(max_await_reqs, Opts, undefined),
     IgnoreResponseTimeout = maps:get(ignore_response_timeout, Opts, false),
+    ReconnectOnStuckInflight = maps:get(reconnect_on_stuck_inflight, Opts, false),
     State = Opts#{host => Host,
                   port => Port,
                   mode => Mode,
@@ -192,7 +193,8 @@ opts_to_state(Mod, Opts) ->
                   max_await_reqs => MaxAwaitReqs,
                   keepalive_timeout => KeepAliveTimeout,
                   response_timeout => ResponseTimeout,
-                  ignore_response_timeout => IgnoreResponseTimeout},
+                  ignore_response_timeout => IgnoreResponseTimeout,
+                  reconnect_on_stuck_inflight => ReconnectOnStuckInflight},
     case Mod of
         undefined ->
             State;

@@ -83,6 +83,7 @@
                    transport => module(),
                    current_rps => {millisecs(), non_neg_integer()},
                    ignore_response_timeout => boolean(),
+                   reconnect_on_stuck_inflight => boolean(),
                    _ => term()}.
 
 -type seq() :: non_neg_integer().
@@ -399,7 +400,7 @@ bound(EventType, Msg, State) ->
 rate_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
     decode(Data, ?FUNCTION_NAME, State);
 rate_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
-    keep_state(State, [{next_event, timeout, keepalive}]);
+    keep_state(State, [postpone]);
 rate_limit_cooldown(state_timeout, rate_limit_reset, State) ->
     next_state(bound, State);
 rate_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
@@ -423,7 +424,12 @@ rate_limit_cooldown(EventType, EventContent, State) ->
 in_flight_limit_cooldown(info, {tcp, Sock, Data}, #{socket := Sock} = State) ->
     decode(Data, ?FUNCTION_NAME, State);
 in_flight_limit_cooldown(timeout, keepalive, #{role := esme} = State) ->
-    keep_state(State, [{next_event, timeout, keepalive}]);
+    keep_state(State, [postpone]);
+in_flight_limit_cooldown(timeout, _, #{reconnect_on_stuck_inflight := true} = State) ->
+    reconnect(timeout, ?FUNCTION_NAME, State);
+in_flight_limit_cooldown(timeout, _, State) ->
+    State1 = handle_send_timeout(State),
+    keep_state(State1);
 in_flight_limit_cooldown({call, From}, {send_req, Body, Time}, State) ->
     in_flight_limit_cooldown(cast, {send_req, Body, From, Time}, State);
 in_flight_limit_cooldown(cast, {send_req, _Body, _Sender, undefined}, State) ->
@@ -769,13 +775,13 @@ set_timeouts(#{keepalive_time := KeepAliveTime,
                ResponseTime -> response;
                KeepAliveTime -> keepalive
            end,
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, Type}];
 set_timeouts(#{keepalive_time := Time}) ->
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, keepalive}];
 set_timeouts(#{response_time := Time}) ->
-    Timeout = max(0, Time - current_time()),
+    Timeout = max(1, Time - current_time()),
     [{timeout, Timeout, response}];
 set_timeouts(_) ->
     [].

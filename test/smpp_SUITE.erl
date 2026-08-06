@@ -20,13 +20,24 @@ all() ->
      connection_repair,
      flow_control_req_per_sec,
      flow_control_in_flight,
-     ignore_response_timeout].
+     ignore_response_timeout,
+     in_flight_cooldown_keepalive_no_hang,
+     reconnect_on_stuck_inflight,
+     reconnect_on_stuck_inflight_disabled,
+     reconnect_on_stuck_inflight_not_triggered_when_responsive].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(ranch),
     Config.
 
 end_per_suite(_Config) ->
+    ok.
+
+init_per_testcase(_TestCase, Config) ->
+    Config.
+
+end_per_testcase(TestCase, _Config) ->
+    ranch:stop_listener({global, {smsc, TestCase}}),
     ok.
 
 %%%===================================================================
@@ -62,8 +73,7 @@ echo_smsc(_Config) ->
 
     ct:pal("SMSCState: ~p", [SMSCConnState]),
     {bound, #{peer_addr := {127,0,0,1}, peer_port := PeerPort}} = SMSCConnState,
-    true = (PeerPort =/= 2775),
-    ranch:stop_listener(?SMSC_REF).
+    true = (PeerPort =/= 2775).
 
 rejecting_smsc(_Config) ->
     {ok, _} = faulty_smsc_1:start(?SMSC_REF, #{}),
@@ -73,8 +83,7 @@ rejecting_smsc(_Config) ->
                                     bind_timeout => 500}),
     [{disconnected, {bind_failed, ?ESME_RBINDFAIL}, binding}] =
         wait_for_events(timer:seconds(1)),
-    false = is_process_alive(Pid),
-    ranch:stop_listener(?SMSC_REF).
+    false = is_process_alive(Pid).
 
 bind_repair(_Config) ->
     {ok, _} = faulty_echo_smsc:start(?SMSC_REF, #{counter => counters:new(1, [])}),
@@ -85,8 +94,7 @@ bind_repair(_Config) ->
                                     reconnect_timeout => 100}),
     ct:sleep({seconds, 1}),
     true = is_process_alive(Pid),
-    {bound, _} = sys:get_state(Pid),
-    ranch:stop_listener(?SMSC_REF).
+    {bound, _} = sys:get_state(Pid).
 
 connection_repair(_Config) ->
     {ok, _} = echo_smsc:start(?SMSC_REF, #{}),
@@ -97,8 +105,7 @@ connection_repair(_Config) ->
     {ok, _} = echo_smsc:start(?SMSC_REF, #{}),
     ct:sleep({seconds, 1}),
     true = is_process_alive(EsmePid),
-    {bound, _} = sys:get_state(EsmePid),
-    ranch:stop_listener(?SMSC_REF).
+    {bound, _} = sys:get_state(EsmePid).
 
 flow_control_req_per_sec(_Config) ->
     {ok, _} = echo_smsc:start(?SMSC_REF, #{}),
@@ -121,8 +128,7 @@ flow_control_req_per_sec(_Config) ->
     {error, overload} = Send(),
     {error, overload} = Send(),
     ct:sleep(1100),
-    ok = Send(),
-    ranch:stop_listener(?SMSC_REF).
+    ok = Send().
 
 flow_control_in_flight(_Config) ->
     {ok, _} = slow_echo_smsc:start(?SMSC_REF, #{}),
@@ -145,8 +151,7 @@ flow_control_in_flight(_Config) ->
                              500),
     ct:sleep(1000),
     {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 1000),
-    {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 1000),
-    ranch:stop_listener(?SMSC_REF).
+    {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 1000).
 
 ignore_response_timeout(_Config) ->
     {ok, _} = slow_echo_smsc:start(?SMSC_REF, #{}),
@@ -155,16 +160,97 @@ ignore_response_timeout(_Config) ->
                                                    ignore_response_timeout => true,
                                                    response_timeout => 600,
                                                    reconnect => false,
-                                                   in_flight_limit => 0,
+                                                   in_flight_limit => 10,
                                                    id => Id}),
     SrcAddr = "1234",
     DestAddr = "88005553535",
     ShortMessage = "test case 1",
     SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
                           short_message = ShortMessage},
-    {error, timeout} = gen_esme:send(?ESME_REF, SubmitSm, 1000),
+    {error, timeout} = gen_esme:send(?ESME_REF, SubmitSm, 600),
+    true = erlang:is_process_alive(EsmePid).
+
+in_flight_cooldown_keepalive_no_hang(_Config) ->
+    {ok, _} = delayed_echo_smsc:start(?SMSC_REF, #{delay => 800}),
+    {global, Id} = ?ESME_REF,
+    {ok, EsmePid} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
+                                                   in_flight_limit => 0,
+                                                   keepalive_timeout => 150,
+                                                   response_timeout => 3000,
+                                                   id => Id}),
+    timer:sleep(100),
+    SrcAddr = "1234",
+    DestAddr = "88005553535",
+    ShortMessage = "keepalive during in flight cooldown",
+    SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
+                          short_message = ShortMessage},
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 5000),
     true = erlang:is_process_alive(EsmePid),
-    ranch:stop_listener(?SMSC_REF).
+    {bound, _} = sys:get_state(EsmePid).
+
+reconnect_on_stuck_inflight(_Config) ->
+    {ok, _} = black_hole_smsc:start(?SMSC_REF, #{}),
+    {global, Id} = ?ESME_REF,
+    {ok, EsmePid} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
+                                                   in_flight_limit => 0,
+                                                   response_timeout => 300,
+                                                   reconnect_timeout => 100,
+                                                   reconnect => true,
+                                                   reconnect_on_stuck_inflight => true,
+                                                   id => Id}),
+    SrcAddr = "1234",
+    DestAddr = "88005553535",
+    ShortMessage = "swallowed forever",
+    SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
+                          short_message = ShortMessage},
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    ct:sleep(1500),
+    true = erlang:is_process_alive(EsmePid),
+    {bound, #{in_flight := []}} = sys:get_state(EsmePid). %on reconnect in_flight is reset
+
+reconnect_on_stuck_inflight_disabled(_Config) ->
+    {ok, _} = black_hole_smsc:start(?SMSC_REF, #{}),
+    {global, Id} = ?ESME_REF,
+    {ok, EsmePid} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
+                                                   in_flight_limit => 0,
+                                                   response_timeout => 300,
+                                                   reconnect => true,
+                                                   id => Id}),
+    SrcAddr = "1234",
+    DestAddr = "88005553535",
+    ShortMessage = "swallowed forever",
+    SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
+                          short_message = ShortMessage},
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    ct:sleep(1500),
+    true = erlang:is_process_alive(EsmePid),
+    {in_flight_limit_cooldown, _} = sys:get_state(EsmePid).
+
+reconnect_on_stuck_inflight_not_triggered_when_responsive(_Config) ->
+    {ok, _} = delayed_echo_smsc:start(?SMSC_REF, #{delay => 300}),
+    {global, Id} = ?ESME_REF,
+    {ok, EsmePid} = test_esme_1:start(?ESME_REF, #{subscriber => self(),
+                                                   in_flight_limit => 0,
+                                                   response_timeout => 5000,
+                                                   reconnect_on_stuck_inflight => true,
+                                                   id => Id}),
+    SrcAddr = "1234",
+    DestAddr = "88005553535",
+    ShortMessage = "not actually stuck",
+    SubmitSm = #submit_sm{source_addr = SrcAddr, destination_addr = DestAddr,
+                          short_message = ShortMessage},
+    ct:sleep(200),
+    St1 = {bound, #{socket := S1, seq := 1}} = sys:get_state(EsmePid),
+    ct:pal("State: ~p", [St1]),
+    ok = gen_esme:send_async(?ESME_REF, SubmitSm, fun(_, S) -> S end, 5000),
+    {ok, {?ESME_ROK, #submit_sm_resp{}}} = gen_esme:send(?ESME_REF, SubmitSm, 5000),
+    true = erlang:is_process_alive(EsmePid),
+    St2 = {bound, #{socket := S2, seq := 3}} = sys:get_state(EsmePid),
+    ct:pal("State2: ~p", [St2]),
+    S1 = S2. % sockets change on reconnect
 
 
 %%%===================================================================
